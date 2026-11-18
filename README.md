@@ -2,7 +2,7 @@
 
 OptoCurator is an open-source desktop GUI application for the detection and interactive clustering of optotagged cells.
 
-![OptoCurator clustering mode](figs/clustering_screenshot.png)
+![OptoCurator clustering mode](docs/figs/clustering_screenshot.png)
 
 ## Installation
 
