@@ -12,7 +12,7 @@ Create and activate the `optocurator` environment from `environment.yml`, then i
 
 ```bash
 git clone https://github.com/bramn22/OptoCurator
-cd OptoCurator
+cd optocurator
 
 conda env create -f environment.yml
 conda activate optocurator
