@@ -8,7 +8,7 @@ Validates:
 5. Incremental member ImageViewer updates in cluster comparison drawer.
 6. Probe shank/layout caching and invalidation lifecycle.
 7. Feature matrix and spike data caching.
-8. Suggested candidates selection deduplication and sequential advance.
+8. Sequential advance in non-active-learning mode.
 9. ClusterCardWidget.update_card across mode switches, empty clusters, and normalization.
 10. render_raster and render_psth empty data handling and theme styling.
 11. Incremental comparison drawer member viewers across cluster switches.
@@ -20,8 +20,6 @@ from typing import Sequence
 import numpy as np
 import pytest
 import pyqtgraph as pg
-from PyQt6.QtCore import Qt
-from PyQt6.QtWidgets import QTableWidget, QTableWidgetItem
 
 from optocurator.analysis.clustering import ClusterSummary
 from optocurator.ui.plots import render_raster, render_psth
@@ -282,43 +280,11 @@ def test_probe_and_clustering_caches_lifecycle(qapp, tmp_path):
     view.close()
 
 
-def test_selection_deduplication_suggested_candidates_and_advance(qapp):
-    """Verify suggested candidates cellClicked and _advance_to_next_table_row prevent duplicate selections."""
+def test_advance_to_next_table_row(qapp):
+    """Verify _advance_to_next_table_row advances sequentially in non-active-learning mode."""
     view = ClusteringView(load_mock=True, start_with_clusters=True)
     all_gids = list(view._pooled_units_map.keys())
     assert len(all_gids) >= 2
-
-    # Set up suggested candidates table
-    view.table_suggested_candidates.setRowCount(2)
-    item0 = QTableWidgetItem("Candidate 0")
-    item0.setData(Qt.ItemDataRole.UserRole, all_gids[0])
-    view.table_suggested_candidates.setItem(0, 0, item0)
-
-    item1 = QTableWidgetItem("Candidate 1")
-    item1.setData(Qt.ItemDataRole.UserRole, all_gids[1])
-    view.table_suggested_candidates.setItem(1, 0, item1)
-
-    # Currently selected GID is already all_gids[0]
-    view._current_selected_gid = all_gids[0]
-
-    call_count = 0
-    orig_select = view.select_pooled_unit
-
-    def spy_select(gid):
-        nonlocal call_count
-        call_count += 1
-        return orig_select(gid)
-
-    view.select_pooled_unit = spy_select
-
-    # Clicking on the already selected unit does not re-invoke select_pooled_unit
-    view._on_suggested_candidate_cell_clicked(0, 0)
-    assert call_count == 0
-
-    # Clicking on a different candidate invokes select_pooled_unit once
-    view._on_suggested_candidate_cell_clicked(1, 0)
-    assert call_count == 1
-    assert view._current_selected_gid == all_gids[1]
 
     # Test sequential advance in non-active learning mode
     view.active_learning_enabled = False

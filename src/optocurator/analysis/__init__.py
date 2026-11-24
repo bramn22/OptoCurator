@@ -1,7 +1,6 @@
 from optocurator.analysis.clustering import (
     CLUSTER_PALETTE,
     ActiveLearningCandidate,
-    ActiveLearningState,
     ClusteringParameters,
     ClusteringResult,
     ClusterSummary,
@@ -15,6 +14,7 @@ from optocurator.analysis.clustering import (
     generate_psth_matrix,
     normalize_psth_waveform,
     perform_clustering,
+    run_active_learning_cycle,
     run_hierarchical_clustering,
     seed_clusters_affinity_propagation,
 )
@@ -71,7 +71,6 @@ __all__ = [
     "ClusterSummary",
     "ClusteringResult",
     "ActiveLearningCandidate",
-    "ActiveLearningState",
     "compute_pca_embedding",
     "run_hierarchical_clustering",
     "perform_clustering",
@@ -79,6 +78,7 @@ __all__ = [
     "compute_auto_assignments",
     "compute_cluster_candidate_suggestions",
     "compute_entropy_ranking",
+    "run_active_learning_cycle",
     "compute_cluster_summaries",
     "extract_feature_matrix",
     "generate_psth_matrix",

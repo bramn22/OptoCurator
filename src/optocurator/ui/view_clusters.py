@@ -1,13 +1,14 @@
 """Response Clustering & Active Learning Workspace."""
 
+import atexit
 import html
 from pathlib import Path
 import sys
 from typing import Any, Dict, List, Optional, Set, Tuple, Union
+import weakref
 import numpy as np
 import pandas as pd
 import pyqtgraph as pg
-from pyqtgraph.dockarea import DockArea, Dock
 from scipy.stats import gaussian_kde
 from PyQt6.QtCore import (
     QEasingCurve,
@@ -37,7 +38,6 @@ from PyQt6.QtGui import (
     QFont,
     QFontMetrics,
     QIcon,
-    QImage,
     QKeyEvent,
     QKeySequence,
     QPainter,
@@ -46,12 +46,10 @@ from PyQt6.QtGui import (
     QPixmap,
     QPolygonF,
     QShortcut,
-    QTransform,
 )
 from PyQt6.QtWidgets import (
     QAbstractItemView,
     QApplication,
-    QButtonGroup,
     QCheckBox,
     QColorDialog,
     QComboBox,
@@ -79,7 +77,6 @@ from PyQt6.QtWidgets import (
     QSizePolicy,
     QSlider,
     QSpinBox,
-    QSplitter,
     QStyle,
     QStyledItemDelegate,
     QStyleOptionViewItem,
@@ -93,7 +90,6 @@ from PyQt6.QtWidgets import (
 
 from optocurator.analysis.clustering import (
     ActiveLearningCandidate,
-    ActiveLearningState,
     AffinityPropagationParameters,
     CLUSTER_PALETTE,
     COLOR_UNASSIGNED,
@@ -104,15 +100,13 @@ from optocurator.analysis.clustering import (
     FeatureConfiguration,
     color_for_cluster,
     compute_2d_embedding,
-    compute_auto_assignments,
-    compute_cluster_candidate_suggestions,
     compute_cluster_summaries,
-    compute_entropy_ranking,
     compute_pca_embedding,
     extract_feature_matrix,
     generate_psth_matrix,
     normalize_psth_waveform,
     perform_clustering,
+    run_active_learning_cycle,
     run_clustering_algorithm,
     run_hierarchical_clustering,
     seed_clusters_affinity_propagation,
@@ -133,16 +127,34 @@ from optocurator.io import (
     compute_portable_path,
     deserialize_model_parameters,
     load_clustering_project,
+    load_phase1_session_arrays,
     resolve_experiment_path,
     save_clustering_project,
     serialize_model_parameters,
     validate_phase1_export,
 )
-from optocurator.analysis.metrics import compute_psth_and_raster, compute_psth_time_ticks
+from optocurator.analysis.metrics import compute_psth_and_raster
+from optocurator.models import MISSING_METRIC_SENTINEL, is_valid_metric_value
 from optocurator.ui.active_learning_worker import ActiveLearningWorker
+
+
+_ACTIVE_AL_WORKERS: Set[ActiveLearningWorker] = set()
+
+
+def _wait_active_al_workers_at_exit() -> None:
+    """Wait briefly for any detached ActiveLearningWorker threads before interpreter teardown."""
+    for worker in list(_ACTIVE_AL_WORKERS):
+        try:
+            if worker.isRunning():
+                worker.wait(5000)
+        except Exception:
+            pass
+        _ACTIVE_AL_WORKERS.discard(worker)
+
+
+atexit.register(_wait_active_al_workers_at_exit)
 from optocurator.ui.detection_widgets import install_combo_chevron
 from optocurator.ui.dialog_clustering import (
-    ClusteringDialog,
     EmbeddingSettingsDialog,
     HierarchicalClusteringDialog,
 )
@@ -158,7 +170,7 @@ from optocurator.ui.dialog_feature_settings import FeatureSettingsDialog
 from optocurator.ui.dialog_seed_clusters import SeedClustersDialog
 from optocurator.ui.plots import (
     DEFAULT_PULSE_DURATION_MS,
-    DEFAULT_Y_AXIS_WIDTH,
+    NumericTableWidgetItem,
     SiliconProbeWidget,
     UnitResponsePlot,
     _SafeLinearRegionItem,
@@ -167,8 +179,6 @@ from optocurator.ui.plots import (
     compute_standard_plot_ticks,
     format_unit_display as _format_unit_display,
     infer_pulse_duration_ms,
-    render_psth,
-    render_raster,
 )
 from optocurator.ui.splitters import ResettableSplitter
 from optocurator.ui.theme import (
@@ -191,7 +201,6 @@ from optocurator.ui.theme import (
     CLUSTERS_CANDIDATE_LABEL_STYLE,
     CLUSTERS_COMPARISON_CLOSE_BTN_STYLE,
     CLUSTERS_COMPARISON_EMPTY_LABEL_STYLE,
-    CLUSTERS_COMPARISON_MODE_BTN_STYLE,
     CLUSTERS_COMPARISON_PANE_DEFAULT_STYLE,
     CLUSTERS_COMPARISON_SCROLL_STYLE,
     CLUSTERS_COUNT_CHIP_STYLE,
@@ -212,10 +221,7 @@ from optocurator.ui.theme import (
     CLUSTERS_PROGRESS_LEGEND_STYLE,
     CLUSTERS_SECTION_SUBHEADER_STYLE,
     CLUSTERS_SHORTCUTS_HELP_TEXT_STYLE,
-    CLUSTERS_SUGGESTED_SECTION_STYLE,
-    CLUSTERS_SUGGESTED_TABLE_STYLE,
     CLUSTERS_SUGGESTED_TOOLBAR_BTN_PRIMARY_STYLE,
-    CLUSTERS_SUGGESTED_TOOLBAR_BTN_SECONDARY_STYLE,
     CLUSTERS_TOOLBAR_ACTION_BTN_STYLE,
     CLUSTERS_TOOLBAR_COMBO_STYLE,
     CLUSTERS_TOOLBAR_DANGER_BTN_STYLE,
@@ -324,7 +330,6 @@ from optocurator.ui.theme import (
     UNIT_RESPONSE_MEMBER_CARD_STYLE,
     UNIT_RESPONSE_MEMBER_HEADER_STYLE,
     build_marginal_legend_html,
-    make_font,
     UNIT_RESPONSE_MEMBER_META_STYLE,
     build_active_learning_button_style,
     build_classification_progress_summary_html,
@@ -491,22 +496,6 @@ def _make_sliders_icon(size: int = 16, color_hex: str = COLOR_TEXT_SECONDARY) ->
         painter.drawEllipse(QPointF(tx, y), r, r)
     painter.end()
     return QIcon(pix)
-
-
-class NumericTableWidgetItem(QTableWidgetItem):
-    """QTableWidgetItem supporting true numeric and custom sort keys."""
-
-    def __init__(self, text: str, sort_key: Any = None):
-        super().__init__(text)
-        self.sort_key = sort_key if sort_key is not None else text
-
-    def __lt__(self, other: "QTableWidgetItem") -> bool:
-        if isinstance(other, NumericTableWidgetItem):
-            try:
-                return self.sort_key < other.sort_key
-            except TypeError:
-                return str(self.sort_key) < str(other.sort_key)
-        return super().__lt__(other)
 
 
 class MarginalDistributionsWidget(QWidget):
@@ -1193,7 +1182,7 @@ class ClusterCardWidget(QFrame):
         count: int = 0,
         color_hex: Optional[str] = None,
         summary: Optional[ClusterSummary] = None,
-        pulse_duration_ms: float = 20.0,
+        pulse_duration_ms: float = DEFAULT_PULSE_DURATION_MS,
         parent: QWidget | None = None,
         custom_name: Optional[str] = None,
         is_smooth: bool = True,
@@ -2162,7 +2151,6 @@ class ClusteringView(QWidget):
         self.raster_order_by: str = "presentation"
         self.raster_marker_size: float = 3.0
         self._unit_raster_psth_cache: Dict[Tuple[str, Tuple[float, float], float, str, bool, float], Dict[str, Any]] = {}
-        self._unit_pixmap_cache: Dict[Tuple[str, Tuple[float, float], float, str, float, bool, float], QPixmap] = {}
         self._member_pixmap_cache: Dict[Tuple[Any, ...], QPixmap] = {}
         self._member_snapshot_plot: Optional[UnitResponsePlot] = None
         self._prewarm_queue: List[str] = []
@@ -2179,11 +2167,6 @@ class ClusteringView(QWidget):
         self._scroll_hydrate_timer.setInterval(16)
         self._scroll_hydrate_timer.setSingleShot(True)
         self._scroll_hydrate_timer.timeout.connect(self._on_scroll_hydrate_timeout)
-        self._offscreen_scene: Optional[pg.GraphicsScene] = None
-        self._offscreen_layout: Optional[pg.GraphicsLayout] = None
-        self._offscreen_plot_canvas: Optional[Any] = None  # Backward compatibility alias
-        self._offscreen_raster_plot: Optional[pg.PlotItem] = None
-        self._offscreen_psth_plot: Optional[pg.PlotItem] = None
         self.current_project_dir: Optional[Path] = None
         self._feature_window_customized: bool = False
         self.feature_config: FeatureConfiguration = FeatureConfiguration(
@@ -2193,6 +2176,8 @@ class ClusteringView(QWidget):
         self.embedding_params: EmbeddingParameters = EmbeddingParameters()
         self.ap_params: AffinityPropagationParameters = AffinityPropagationParameters()
         self._active_learning_worker: Optional[ActiveLearningWorker] = None
+        self._tracked_al_workers: List[ActiveLearningWorker] = []
+        self._is_closing: bool = False
         self._start_with_clusters: bool = start_with_clusters
 
         self.active_clustering_params: ClusteringParameters = ClusteringParameters(
@@ -2243,7 +2228,6 @@ class ClusteringView(QWidget):
         self._comparison_cluster_id: Optional[int] = None
         self.comparison_viewers: List[QWidget] = []
         self._dismissed_cluster_candidates: Dict[int, Set[str]] = {}
-        self._current_suggested_candidates: List[Dict[str, Any]] = []
         self._undo_stack: List[Dict[str, Any]] = []
         self._redo_stack: List[Dict[str, Any]] = []
         self._is_applying_undo_redo: bool = False
@@ -2716,21 +2700,6 @@ class ClusteringView(QWidget):
         self.lbl_comparison_title.setStyleSheet(build_comparison_title_style(COLOR_TEXT))
         self.lbl_comparison_title.setVisible(False)
 
-        self.btn_comp_mode_both = QPushButton("Both", self.comparison_pane)
-        self.btn_comp_mode_members = QPushButton("Members", self.comparison_pane)
-        self.btn_comp_mode_suggested = QPushButton("Suggested", self.comparison_pane)
-        for btn in (self.btn_comp_mode_both, self.btn_comp_mode_members, self.btn_comp_mode_suggested):
-            btn.setCheckable(True)
-            btn.setStyleSheet(CLUSTERS_COMPARISON_MODE_BTN_STYLE)
-            btn.setVisible(False)
-        self.btn_comp_mode_both.setChecked(True)
-        self.comp_mode_group = QButtonGroup(self.comparison_pane)
-        self.comp_mode_group.setExclusive(True)
-        self.comp_mode_group.addButton(self.btn_comp_mode_both, 0)
-        self.comp_mode_group.addButton(self.btn_comp_mode_members, 1)
-        self.comp_mode_group.addButton(self.btn_comp_mode_suggested, 2)
-        self.comp_mode_group.idClicked.connect(self._on_comp_mode_changed)
-
         self.btn_comp_assign = QPushButton("✓", self.comparison_pane)
         self.btn_comp_assign.setToolTip("Assign current active unit to this cluster")
         self.btn_comp_assign.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -2742,9 +2711,6 @@ class ClusteringView(QWidget):
         self._inspector_align_spacer = QWidget(self.comparison_pane)
         self._inspector_align_spacer.setFixedHeight(0)
         comp_layout.addWidget(self._inspector_align_spacer)
-
-        self.comp_body_splitter = QSplitter(Qt.Orientation.Vertical)
-        self.comp_body_splitter.setChildrenCollapsible(False)
 
         self.curated_members_panel = QWidget()
         panel1_layout = QVBoxLayout(self.curated_members_panel)
@@ -2771,50 +2737,7 @@ class ClusteringView(QWidget):
         self.comparison_list_layout.setSpacing(6)
         self.comparison_scroll_area.setWidget(self.comparison_list_widget)
         panel1_layout.addWidget(self.comparison_scroll_area)
-        self.comp_body_splitter.addWidget(self.curated_members_panel)
-
-        self.suggested_candidates_panel = QWidget()
-        self.suggested_candidates_panel.setVisible(False)
-        panel2_layout = QVBoxLayout(self.suggested_candidates_panel)
-        panel2_layout.setContentsMargins(0, 0, 0, 0)
-        panel2_layout.setSpacing(4)
-
-        self.lbl_suggested_section = QLabel("▲ SUGGESTED CANDIDATES (N=0)")
-        self.lbl_suggested_section.setStyleSheet(CLUSTERS_SUGGESTED_SECTION_STYLE)
-        panel2_layout.addWidget(self.lbl_suggested_section)
-
-        self.table_suggested_candidates = QTableWidget()
-        self.table_suggested_candidates.setColumnCount(9)
-        self.table_suggested_candidates.setHorizontalHeaderLabels([
-            "✓", "Unit", "Session", "Conf", "Dist(σ)", "Lat", "Rel", "Jit", "SALT p"
-        ])
-        self.table_suggested_candidates.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-        self.table_suggested_candidates.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
-        self.table_suggested_candidates.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        self.table_suggested_candidates.verticalHeader().setVisible(False)
-        self.table_suggested_candidates.horizontalHeader().setStretchLastSection(True)
-        self.table_suggested_candidates.setStyleSheet(CLUSTERS_SUGGESTED_TABLE_STYLE)
-        self.table_suggested_candidates.currentItemChanged.connect(self._on_suggested_candidate_focused)
-        self.table_suggested_candidates.cellClicked.connect(self._on_suggested_candidate_cell_clicked)
-        self.table_suggested_candidates.installEventFilter(self)
-        panel2_layout.addWidget(self.table_suggested_candidates)
-
-        cand_btn_layout = QHBoxLayout()
-        cand_btn_layout.setSpacing(6)
-        self.btn_accept_candidates = QPushButton("✓ Accept")
-        self.btn_accept_candidates.setStyleSheet(CLUSTERS_SUGGESTED_TOOLBAR_BTN_PRIMARY_STYLE)
-        self.btn_accept_candidates.clicked.connect(self._on_accept_selected_candidates)
-        cand_btn_layout.addWidget(self.btn_accept_candidates, stretch=2)
-
-        self.btn_dismiss_candidates = QPushButton("✕ Dismiss")
-        self.btn_dismiss_candidates.setStyleSheet(CLUSTERS_SUGGESTED_TOOLBAR_BTN_SECONDARY_STYLE)
-        self.btn_dismiss_candidates.clicked.connect(self._on_dismiss_selected_candidates)
-        cand_btn_layout.addWidget(self.btn_dismiss_candidates, stretch=1)
-        panel2_layout.addLayout(cand_btn_layout)
-
-        self.comp_body_splitter.addWidget(self.suggested_candidates_panel)
-        comp_layout.addWidget(self.comp_body_splitter, stretch=1)
-        self.comp_body_splitter.setSizes([260, 180])
+        comp_layout.addWidget(self.curated_members_panel, stretch=1)
 
         self.comparison_pane.setVisible(False)
         if hasattr(self, "inspector_empty_state"):
@@ -2874,13 +2797,6 @@ class ClusteringView(QWidget):
         self.btn_seed_clusters.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_seed_clusters.clicked.connect(self.prompt_seed_clusters)
         row1_action_bar.addWidget(self.btn_seed_clusters)
-
-        # Hidden compatibility button ('+ New cluster' now lives at end of card grid, § 9.2)
-        self.btn_new_cluster = QPushButton("+ New cluster", self.clusters_area_panel)
-        self.btn_new_cluster.setToolTip("Create a new cluster and assign the active/selected candidate to it (Hotkey: N)")
-        self.btn_new_cluster.setStyleSheet(CLUSTERS_TOOLBAR_PRIMARY_BTN_STYLE)
-        self.btn_new_cluster.clicked.connect(self.create_new_cluster_for_candidate)
-        self.btn_new_cluster.setVisible(False)
 
         self.btn_cluster = QPushButton("Run clustering")
         self.btn_cluster.setToolTip("Configure and run response clustering (Hierarchical, K-Means, GMM)")
@@ -2987,11 +2903,6 @@ class ClusteringView(QWidget):
 
         self.btn_clusters_more.setMenu(self._clusters_more_menu)
         row1_action_bar.addWidget(self.btn_clusters_more)
-
-        self.btn_feature_settings = QPushButton("Feature Settings")
-        self.btn_feature_settings.setStyleSheet(CLUSTERS_TOOLBAR_ACTION_BTN_STYLE)
-        self.btn_feature_settings.clicked.connect(self.prompt_feature_settings)
-        self.btn_feature_settings.setVisible(False)
 
         self.btn_customize_clusters = QPushButton("Customize clusters")
         self.btn_customize_clusters.setStyleSheet(CLUSTERS_TOOLBAR_ACTION_BTN_STYLE)
@@ -3934,6 +3845,7 @@ class ClusteringView(QWidget):
             self.ap_params = ap_params
         active_ap = self.ap_params
 
+        self._push_undo_snapshot()
         spike_map = self._get_spike_data_map(df)
         result = seed_clusters_affinity_propagation(
             df=df,
@@ -3947,12 +3859,16 @@ class ClusteringView(QWidget):
             ap_params=active_ap,
             embedding_params=self.embedding_params,
             pulse_duration_ms=self._get_pulse_duration_ms(),
+            psth_smooth=self.psth_smooth,
+            psth_gaussian_sigma_ms=self.psth_gaussian_sigma_ms,
+            cluster_psth_norm=self.cluster_psth_norm,
         )
         self.current_clustering_result = result
-        self._cluster_card_order = sorted(list(result.cluster_summaries.keys()))
+        preserve_curated = getattr(active_ap, "preserve_curated", True)
+        if not preserve_curated:
+            self._cluster_card_order = sorted(list(result.cluster_summaries.keys()))
 
         # Update unit status map and internal records
-        preserve_curated = getattr(active_ap, "preserve_curated", True)
         for i, gid in enumerate(result.unit_ids):
             cid = int(result.cluster_labels[i])
             if gid in self._pooled_units_map:
@@ -3966,13 +3882,20 @@ class ClusteringView(QWidget):
             if gid in self._pooled_units_map:
                 r["cluster_id"] = self._pooled_units_map[gid]["cluster_id"]
 
-        for cid, summ in result.cluster_summaries.items():
+        if preserve_curated:
+            self._sync_clustering_result_and_cards()
+        else:
+            for cid, summ in result.cluster_summaries.items():
+                if cid not in self._cluster_colors:
+                    self._cluster_colors[cid] = self._get_cluster_color(cid)
+                summ.color_hex = self._get_cluster_color(cid)
+            self._render_cluster_cards(result)
+
+        for cid in self.current_clustering_result.cluster_summaries:
             if cid not in self._cluster_colors:
                 self._cluster_colors[cid] = self._get_cluster_color(cid)
-            summ.color_hex = self._get_cluster_color(cid)
 
-        self._render_cluster_cards(result)
-        self._render_pca_scatter(result)
+        self._render_pca_scatter(self.current_clustering_result)
         self._update_all_pooled_cluster_items()
         self._populate_cluster_filter_options()
 
@@ -3985,30 +3908,41 @@ class ClusteringView(QWidget):
         self.clustering_completed.emit(len(result.cluster_summaries))
         return True
 
-    def create_new_cluster_for_candidate(self) -> int:
-        """Create the next sequential cluster and assign the active or selected candidate(s) to it."""
+    def _resolve_selected_target_gids(self) -> List[str]:
+        """Collect selected unit IDs prioritizing list_candidates focus over pooled table/active candidate."""
         target_gids: List[str] = []
-        if hasattr(self, "table_pooled_units") and self.table_pooled_units.selectionModel() is not None:
+        in_list_panel = (
+            getattr(self, "_focus_source", None) == "list_candidates"
+            or (hasattr(self, "table_list_panel") and self.table_list_panel.hasFocus())
+        )
+        if in_list_panel:
+            target_gids = self._get_list_panel_selected_gids()
+        elif hasattr(self, "table_pooled_units") and self.table_pooled_units.selectionModel() is not None:
             selected_model_rows = self.table_pooled_units.selectionModel().selectedRows()
             for model_idx in selected_model_rows:
                 r = model_idx.row()
                 gid_val = self._get_gid_for_row(r)
                 if gid_val and gid_val in self._pooled_units_map:
                     target_gids.append(gid_val)
-
         if not target_gids:
-            if self._current_selected_gid and self._current_selected_gid in self._pooled_units_map:
+            if self._current_selected_gid is not None and self._current_selected_gid in self._pooled_units_map:
                 target_gids.append(self._current_selected_gid)
-            elif self.active_candidate:
+            elif self.active_candidate is not None:
                 target_gids.append(self.active_candidate.global_unit_id)
-            elif self._pooled_rows:
-                # First unassigned unit
-                for r in self._pooled_rows:
-                    if r.get("cluster_id", -1) < 0:
-                        target_gids.append(r.get("global_unit_id"))
-                        break
-                if not target_gids and self._pooled_rows:
-                    target_gids.append(self._pooled_rows[0].get("global_unit_id"))
+        return target_gids
+
+    def create_new_cluster_for_candidate(self) -> int:
+        """Create the next sequential cluster and assign the active or selected candidate(s) to it."""
+        target_gids = self._resolve_selected_target_gids()
+
+        if not target_gids and self._pooled_rows:
+            # First unassigned unit
+            for r in self._pooled_rows:
+                if r.get("cluster_id", -1) < 0:
+                    target_gids.append(r.get("global_unit_id"))
+                    break
+            if not target_gids and self._pooled_rows:
+                target_gids.append(self._pooled_rows[0].get("global_unit_id"))
 
         if not target_gids:
             return -1
@@ -4051,6 +3985,7 @@ class ClusteringView(QWidget):
                 return False
             mode = dlg.reset_mode()
 
+        self._invalidate_active_learning_worker()
         if mode == "auto_only":
             self._push_undo_snapshot()
             self.revert_auto_assignments(confirm=False)
@@ -4121,65 +4056,10 @@ class ClusteringView(QWidget):
 
     def _recompute_and_render_clusters(self) -> None:
         """Recompute cluster summaries from current assignments and re-render cluster cards and scatter."""
-        df_active = self._get_active_pooled_dataframe()
-        if df_active.empty:
-            return
-
-        labels = np.array([self._pooled_units_map.get(gid, {}).get("cluster_id", -1) for gid in df_active["global_unit_id"].astype(str)], dtype=np.int32)
-        spike_map = self._get_spike_data_map(df_active)
-
-        feat_matrix, _, _ = extract_feature_matrix(
-            df_active,
-            feature_config=self.feature_config,
-            spike_data_map=spike_map,
-            psth_cache=self._unit_psth_cache,
-            pulse_duration_ms=self._get_pulse_duration_ms(),
+        self._sync_clustering_result_and_cards(
+            recompute_embedding=True,
+            prune_and_refresh_list=False,
         )
-        psth_matrix, t_bins = generate_psth_matrix(
-            df_active,
-            time_window_ms=self.current_window_ms,
-            bin_size_ms=self.current_bin_size_ms,
-            spike_data_map=spike_map,
-            psth_cache=self._unit_psth_cache,
-            smooth=self.psth_smooth,
-            gaussian_sigma_ms=self.psth_gaussian_sigma_ms,
-        )
-        pca_coords, exp_var = compute_2d_embedding(
-            feat_matrix,
-            embedding_params=self.embedding_params,
-            random_state=getattr(self, "al_random_state", 42),
-        )
-        unit_ids = df_active["global_unit_id"].astype(str).tolist()
-
-        non_empty_cids = set(int(c) for c in np.unique(labels) if c >= 0)
-        self._cluster_card_order = [cid for cid in self._cluster_card_order if cid in non_empty_cids]
-        for c in sorted(non_empty_cids):
-            if c not in self._cluster_card_order:
-                self._cluster_card_order.append(c)
-
-        summaries = compute_cluster_summaries(
-            df_active,
-            labels,
-            psth_matrix,
-            t_bins,
-            active_cluster_ids=self._cluster_card_order,
-            norm_mode=self.cluster_psth_norm,
-        )
-        for cid, summ in summaries.items():
-            summ.color_hex = self._get_cluster_color(cid)
-
-        self.current_clustering_result = ClusteringResult(
-            cluster_labels=labels,
-            pca_coordinates=pca_coords,
-            explained_variance_ratio=exp_var,
-            cluster_summaries=summaries,
-            feature_matrix=feat_matrix,
-            unit_ids=unit_ids,
-            parameters=self.active_clustering_params,
-        )
-
-        self._render_cluster_cards(self.current_clustering_result)
-        self._render_pca_scatter(self.current_clustering_result)
 
     def show_curation_shortcuts_help(self) -> QDialog:
         """Display dialog explaining curation keyboard shortcuts and workflow."""
@@ -4232,8 +4112,8 @@ class ClusteringView(QWidget):
         self._shortcuts_help_dialog = dialog
         return dialog
 
-    def prompt_hierarchical_clustering(self) -> None:
-        """Open the Response Clustering modal configuration dialog."""
+    def prompt_hierarchical_clustering(self) -> bool:
+        """Open the Response Clustering modal configuration dialog and run clustering if accepted."""
         dlg = HierarchicalClusteringDialog(
             current_params=self.active_clustering_params,
             feature_config=self.feature_config,
@@ -4244,8 +4124,9 @@ class ClusteringView(QWidget):
             self.active_clustering_params = new_params
             self.feature_config = dlg.get_feature_configuration()
             self.active_clustering_params.feature_config = self.feature_config
-            preserve_curated = dlg.radio_keep_curated.isChecked()
-            self.run_clustering(new_params, preserve_curated=preserve_curated)
+            preserve_curated = dlg.keep_curated()
+            return self.run_clustering(new_params, preserve_curated=preserve_curated)
+        return False
 
     def prompt_customize_clusters(self) -> None:
         """Open modal dialog to customize cluster names, colors, and order."""
@@ -4340,19 +4221,16 @@ class ClusteringView(QWidget):
         # Build pooled dataframe from active sessions or mock records
         df = self._get_active_pooled_dataframe()
         if df.empty or len(df) == 0:
-            if not self.loaded_experiments and len(self._pooled_rows) == 0:
-                self._load_mock_data()
-                df = self._get_active_pooled_dataframe()
-            else:
-                QMessageBox.warning(
-                    self,
-                    "No Units to Cluster",
-                    "No optotagged units are currently loaded in the Phase 2 pool.\n\n"
-                    "Please add at least one curated experiment containing optotagged cells before clustering.",
-                )
-                return False
+            QMessageBox.warning(
+                self,
+                "No Units to Cluster",
+                "No optotagged units are currently loaded in the Phase 2 pool.\n\n"
+                "Please add at least one curated experiment containing optotagged cells before clustering.",
+            )
+            return False
 
         # Run clustering analysis
+        self._push_undo_snapshot()
         spike_map = self._get_spike_data_map(df)
         result = perform_clustering(
             df,
@@ -4376,17 +4254,21 @@ class ClusteringView(QWidget):
             if gid in self._pooled_units_map:
                 r["cluster_id"] = self._pooled_units_map[gid]["cluster_id"]
 
-        # Synchronize cluster colors
-        for cid, summ in result.cluster_summaries.items():
+        if preserve_curated:
+            self._sync_clustering_result_and_cards()
+        else:
+            for cid, summ in result.cluster_summaries.items():
+                if cid not in self._cluster_colors:
+                    self._cluster_colors[cid] = self._get_cluster_color(cid)
+                summ.color_hex = self._get_cluster_color(cid)
+            self._render_cluster_cards(result)
+
+        for cid in self.current_clustering_result.cluster_summaries:
             if cid not in self._cluster_colors:
                 self._cluster_colors[cid] = self._get_cluster_color(cid)
-            summ.color_hex = self._get_cluster_color(cid)
 
         # Update 2D PCA Scatter plot
-        self._render_pca_scatter(result)
-
-        # Update Cluster Cards grid
-        self._render_cluster_cards(result)
+        self._render_pca_scatter(self.current_clustering_result)
 
         # Update cluster column items across table
         self._update_all_pooled_cluster_items()
@@ -4935,6 +4817,7 @@ class ClusteringView(QWidget):
 
     def _sort_cluster_cards(self, sort_mode: str) -> None:
         """Sort cluster card order by 'id', 'size', 'latency', or 'name' while keeping colours & keys fixed (§ 9.1)."""
+        self._push_undo_snapshot()
         self._cluster_sort_mode = sort_mode
         if hasattr(self, "_sort_actions") and sort_mode in self._sort_actions:
             self._sort_actions[sort_mode].setChecked(True)
@@ -5463,21 +5346,29 @@ class ClusteringView(QWidget):
         self._suppress_list_panel_selection = False
         self._on_list_panel_selection_changed()
 
-    def _sync_clustering_result_and_cards(self) -> None:
-        """Synchronize current_clustering_result labels and cluster card summaries with _pooled_units_map."""
+    def _sync_clustering_result_and_cards(
+        self,
+        *,
+        recompute_embedding: bool = False,
+        prune_and_refresh_list: bool = True,
+    ) -> None:
+        """Synchronize current_clustering_result and cluster card summaries with _pooled_units_map."""
         df_active = self._get_active_pooled_dataframe()
         if df_active.empty:
             return
 
-        unit_ids = (
-            self.current_clustering_result.unit_ids
-            if (self.current_clustering_result is not None and len(self.current_clustering_result.unit_ids) == len(df_active))
-            else (
-                df_active["global_unit_id"].astype(str).tolist()
-                if "global_unit_id" in df_active.columns
-                else [f"u_{i}" for i in range(len(df_active))]
-            )
+        need_embedding = (
+            recompute_embedding
+            or self.current_clustering_result is None
+            or len(self.current_clustering_result.unit_ids) != len(df_active)
         )
+        if not need_embedding and self.current_clustering_result is not None:
+            unit_ids = self.current_clustering_result.unit_ids
+        elif "global_unit_id" in df_active.columns:
+            unit_ids = df_active["global_unit_id"].astype(str).tolist()
+        else:
+            unit_ids = [f"u_{i}" for i in range(len(df_active))]
+
         labels = np.array([
             self._pooled_units_map.get(gid, {}).get("cluster_id", -1)
             for gid in unit_ids
@@ -5485,8 +5376,8 @@ class ClusteringView(QWidget):
 
         spike_map = self._get_cached_spike_data_map(df_active)
 
-        if self.current_clustering_result is None:
-            feat_matrix, psth_matrix, t_bins = extract_feature_matrix(
+        if need_embedding:
+            feat_matrix, _, _ = extract_feature_matrix(
                 df_active,
                 feature_config=self.feature_config,
                 spike_data_map=spike_map,
@@ -5532,10 +5423,11 @@ class ClusteringView(QWidget):
         self.current_clustering_result.cluster_summaries = new_summaries
         self._render_cluster_cards(self.current_clustering_result)
         self._render_pca_scatter(self.current_clustering_result)
-        self.prune_empty_clusters()
-        if self._comparison_cluster_id is not None and self._comparison_cluster_id not in self._cluster_cards:
-            self.clear_cluster_comparison()
-        self._refresh_list_panel()
+        if prune_and_refresh_list:
+            self.prune_empty_clusters()
+            if self._comparison_cluster_id is not None and self._comparison_cluster_id not in self._cluster_cards:
+                self.clear_cluster_comparison()
+            self._refresh_list_panel()
 
     def _on_scatter_point_clicked(self, scatter: Any, points: Any) -> None:
         """Interactive point selection callback: clicking a PCA point selects the corresponding unit."""
@@ -5554,7 +5446,7 @@ class ClusteringView(QWidget):
             target_gid = points[0].data()
 
         if target_gid:
-            self.select_pooled_unit(str(target_gid))
+            self.select_pooled_unit(str(target_gid), source="queue")
 
     def _on_cluster_card_clicked(self, cluster_id: int) -> None:
         """Toggle side-by-side cluster comparison for the clicked cluster."""
@@ -5673,135 +5565,16 @@ class ClusteringView(QWidget):
                 lbl_empty.setStyleSheet(CLUSTERS_COMPARISON_EMPTY_LABEL_STYLE)
                 self.comparison_list_layout.insertWidget(0, lbl_empty)
 
-        # Compute and populate Suggested Candidates
-        dismissed = self._dismissed_cluster_candidates.get(cluster_id, set())
-        feat_matrix = (
-            self.current_clustering_result.feature_matrix
-            if self.current_clustering_result is not None
-            else None
-        )
-
-        if (
-            self.current_clustering_result is not None
-            and getattr(self.current_clustering_result, "unit_ids", None) is not None
-            and len(self.current_clustering_result.unit_ids) == len(self._pooled_units_map)
-        ):
-            ordered_gids = [str(uid) for uid in self.current_clustering_result.unit_ids]
-        else:
-            ordered_gids = list(self._pooled_units_map.keys())
-
-        pooled_records = []
-        for gid in ordered_gids:
-            rec = self._pooled_units_map.get(gid, {})
-            r_copy = dict(rec)
-            status_val = self._unit_status_map.get(gid, rec.get("status", "Unassigned"))
-            r_copy["status"] = status_val
-            r_copy["curated_status"] = status_val
-            r_copy["cluster_id"] = rec.get("cluster_id", -1)
-            pooled_records.append(r_copy)
-
-        df = pd.DataFrame(pooled_records)
-        cluster_labels = np.array([
-            r.get("cluster_id", -1) for r in pooled_records
-        ], dtype=np.int32)
-        unit_status_map = {
-            r.get("global_unit_id", gid): self._unit_status_map.get(r.get("global_unit_id", gid), r.get("status", "Unassigned"))
-            for r in pooled_records
-        }
-
-        suggestions = compute_cluster_candidate_suggestions(
-            df=df,
-            target_cluster_id=cluster_id,
-            cluster_labels=cluster_labels,
-            unit_status_map=unit_status_map,
-            threshold=0.30,
-            max_distance_sigma=3.5,
-            feature_config=self.feature_config,
-            feature_matrix=feat_matrix,
-            spike_data_map=self._get_cached_spike_data_map(df),
-            psth_cache=self._unit_psth_cache,
-            precomputed_probabilities=self._all_unit_probabilities,
-            dismissed_gids=dismissed,
-            pulse_duration_ms=self._get_pulse_duration_ms(),
-        )
-        self._current_suggested_candidates = suggestions
-        self.lbl_suggested_section.setText(f"▲ SUGGESTED CANDIDATES (N={len(suggestions)}) — Ranked by Similarity")
-
-        # Block signals temporarily to populate table cleanly
-        self.table_suggested_candidates.blockSignals(True)
-        self.table_suggested_candidates.setRowCount(len(suggestions))
-        for r, cand in enumerate(suggestions):
-            gid = cand["global_unit_id"]
-
-            chk_item = QTableWidgetItem()
-            chk_item.setFlags(Qt.ItemFlag.ItemIsUserCheckable | Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
-            chk_item.setCheckState(Qt.CheckState.Unchecked)
-            chk_item.setData(Qt.ItemDataRole.UserRole, gid)
-            self.table_suggested_candidates.setItem(r, 0, chk_item)
-
-            u_item = QTableWidgetItem(str(cand["unit_id"]))
-            u_item.setData(Qt.ItemDataRole.UserRole, gid)
-            u_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-            self.table_suggested_candidates.setItem(r, 1, u_item)
-
-            s_item = QTableWidgetItem(str(cand["session_id"])[-6:] if len(str(cand["session_id"])) > 6 else str(cand["session_id"]))
-            s_item.setData(Qt.ItemDataRole.UserRole, gid)
-            s_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-            self.table_suggested_candidates.setItem(r, 2, s_item)
-
-            conf_pct = int(round(cand["probability"] * 100))
-            conf_item = QTableWidgetItem(f"{conf_pct}%")
-            conf_item.setData(Qt.ItemDataRole.UserRole, gid)
-            conf_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-            if conf_pct >= 85:
-                conf_item.setForeground(QColor(COLOR_SUCCESS))
-            elif conf_pct >= 60:
-                conf_item.setForeground(QColor(COLOR_ACCENT))
-            self.table_suggested_candidates.setItem(r, 3, conf_item)
-
-            dist_item = QTableWidgetItem(f"{cand['distance_sigma']}σ")
-            dist_item.setData(Qt.ItemDataRole.UserRole, gid)
-            dist_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-            self.table_suggested_candidates.setItem(r, 4, dist_item)
-
-            lat_item = QTableWidgetItem(f"{cand['latency_ms']}")
-            lat_item.setData(Qt.ItemDataRole.UserRole, gid)
-            lat_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-            self.table_suggested_candidates.setItem(r, 5, lat_item)
-
-            rel_item = QTableWidgetItem(f"{cand['reliability']}")
-            rel_item.setData(Qt.ItemDataRole.UserRole, gid)
-            rel_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-            self.table_suggested_candidates.setItem(r, 6, rel_item)
-
-            jit_item = QTableWidgetItem(f"{cand['jitter_ms']}")
-            jit_item.setData(Qt.ItemDataRole.UserRole, gid)
-            jit_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-            self.table_suggested_candidates.setItem(r, 7, jit_item)
-
-            salt_item = QTableWidgetItem(f"{cand['salt_p_value']}")
-            salt_item.setData(Qt.ItemDataRole.UserRole, gid)
-            salt_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-            self.table_suggested_candidates.setItem(r, 8, salt_item)
-
-        self.table_suggested_candidates.blockSignals(False)
-
         n_curated = sum(
             1 for g in member_gids
             if self._unit_status_map.get(g, self._pooled_units_map[g].get("status", "Unassigned")) in ("Curated", "Seeded")
         )
         self.lbl_comparison_title.setText(
-            f"Comparing: {cname} (N={len(member_gids)} | {n_curated} Curated | {len(suggestions)} Suggested)"
+            f"Comparing: {cname} (N={len(member_gids)} | {n_curated} Curated)"
         )
         self.lbl_comparison_title.setStyleSheet(build_comparison_title_style(color_hex))
 
         self.comparison_pane.setVisible(True)
-
-        # If no unit is currently selected, select row 0 in suggestions to preview
-        if self._current_selected_gid is None and suggestions:
-            self.table_suggested_candidates.selectRow(0)
-            first_gid = suggestions[0]["global_unit_id"]
-            self.select_pooled_unit(first_gid)
 
         self._refresh_list_panel()
         self._update_inspector_member_highlights()
@@ -5809,122 +5582,6 @@ class ClusteringView(QWidget):
         if display_gids:
             self._schedule_background_plot_prewarm(display_gids, prioritize_front=True)
         QTimer.singleShot(0, self._align_inspector_first_member_raster)
-
-    def _on_comp_mode_changed(self, mode_id: int) -> None:
-        """Switch between Both, Members Only, and Suggested Only views."""
-        if mode_id == 0:  # Both
-            self.curated_members_panel.setVisible(True)
-            self.suggested_candidates_panel.setVisible(True)
-        elif mode_id == 1:  # Members Only
-            self.curated_members_panel.setVisible(True)
-            self.suggested_candidates_panel.setVisible(False)
-        elif mode_id == 2:  # Suggested Only
-            self.curated_members_panel.setVisible(False)
-            self.suggested_candidates_panel.setVisible(True)
-
-    def _on_suggested_candidate_focused(self, current_item: Optional[QTableWidgetItem], previous_item: Optional[QTableWidgetItem]) -> None:
-        """Synchronized metric & waveform verification: update main inspection view, marginal KDE red markers, probe, and card overlay."""
-        if current_item is None:
-            return
-        row = current_item.row()
-        item = self.table_suggested_candidates.item(row, 0)
-        if item is not None:
-            gid = item.data(Qt.ItemDataRole.UserRole)
-            if gid:
-                self.select_pooled_unit(gid)
-
-    def _on_suggested_candidate_cell_clicked(self, row: int, col: int) -> None:
-        """Toggle checkbox when clicking column 0, or ensure selection for rapid inspection."""
-        if col == 0:
-            item = self.table_suggested_candidates.item(row, 0)
-            if item is not None:
-                new_state = Qt.CheckState.Unchecked if item.checkState() == Qt.CheckState.Checked else Qt.CheckState.Checked
-                item.setCheckState(new_state)
-        item0 = self.table_suggested_candidates.item(row, 0)
-        if item0 is not None:
-            gid = item0.data(Qt.ItemDataRole.UserRole)
-            if gid and gid != self._current_selected_gid:
-                self.select_pooled_unit(gid)
-
-    def _toggle_selected_candidate_checkboxes(self) -> None:
-        """Toggle the check state of all currently selected rows in table_suggested_candidates."""
-        selected_rows = set(index.row() for index in self.table_suggested_candidates.selectedIndexes())
-        if not selected_rows:
-            current_row = self.table_suggested_candidates.currentRow()
-            if current_row >= 0:
-                selected_rows = {current_row}
-        for r in selected_rows:
-            item = self.table_suggested_candidates.item(r, 0)
-            if item is not None:
-                new_state = Qt.CheckState.Unchecked if item.checkState() == Qt.CheckState.Checked else Qt.CheckState.Checked
-                item.setCheckState(new_state)
-
-    def _on_accept_selected_candidates(self) -> None:
-        """Accept selected candidate units into the compared cluster as Curated."""
-        if self._comparison_cluster_id is None:
-            return
-        cid = self._comparison_cluster_id
-
-        # Gather all checked units, or falling back to selected rows
-        gids_to_accept: List[str] = []
-        for r in range(self.table_suggested_candidates.rowCount()):
-            item = self.table_suggested_candidates.item(r, 0)
-            if item is not None and item.checkState() == Qt.CheckState.Checked:
-                gid = item.data(Qt.ItemDataRole.UserRole)
-                if gid:
-                    gids_to_accept.append(gid)
-
-        if not gids_to_accept:
-            selected_rows = set(index.row() for index in self.table_suggested_candidates.selectedIndexes())
-            if not selected_rows:
-                current_row = self.table_suggested_candidates.currentRow()
-                if current_row >= 0:
-                    selected_rows = {current_row}
-            for r in selected_rows:
-                item = self.table_suggested_candidates.item(r, 0)
-                if item is not None:
-                    gid = item.data(Qt.ItemDataRole.UserRole)
-                    if gid and gid not in gids_to_accept:
-                        gids_to_accept.append(gid)
-
-        if not gids_to_accept:
-            return
-
-        self.assign_candidate_to_cluster(cid, unit_id=gids_to_accept)
-
-    def _on_dismiss_selected_candidates(self) -> None:
-        """Dismiss selected candidate units from suggestions for the compared cluster."""
-        if self._comparison_cluster_id is None:
-            return
-        cid = self._comparison_cluster_id
-
-        gids_to_dismiss: List[str] = []
-        for r in range(self.table_suggested_candidates.rowCount()):
-            item = self.table_suggested_candidates.item(r, 0)
-            if item is not None and item.checkState() == Qt.CheckState.Checked:
-                gid = item.data(Qt.ItemDataRole.UserRole)
-                if gid:
-                    gids_to_dismiss.append(gid)
-
-        if not gids_to_dismiss:
-            selected_rows = set(index.row() for index in self.table_suggested_candidates.selectedIndexes())
-            if not selected_rows:
-                current_row = self.table_suggested_candidates.currentRow()
-                if current_row >= 0:
-                    selected_rows = {current_row}
-            for r in selected_rows:
-                item = self.table_suggested_candidates.item(r, 0)
-                if item is not None:
-                    gid = item.data(Qt.ItemDataRole.UserRole)
-                    if gid and gid not in gids_to_dismiss:
-                        gids_to_dismiss.append(gid)
-
-        if not gids_to_dismiss:
-            return
-
-        dismissed_set = self._dismissed_cluster_candidates.setdefault(cid, set())
-        dismissed_set.update(gids_to_dismiss)
-        self.set_cluster_comparison(cid)
 
     def _update_inspector_header(
         self,
@@ -5949,7 +5606,7 @@ class ClusteringView(QWidget):
                 lat = self._pooled_units_map.get(gid, {}).get("latency_ms")
                 if lat is not None and pd.notna(lat):
                     lat_f = float(lat)
-                    if lat_f < 500.0:
+                    if is_valid_metric_value(lat_f):
                         valid_lats.append(lat_f)
             if valid_lats:
                 mean_lat = float(np.mean(valid_lats))
@@ -6025,18 +5682,6 @@ class ClusteringView(QWidget):
                 is_text_input = self._is_text_input_widget(QApplication.focusWidget())
                 if not is_text_input and self._handle_curation_key_event(event):
                     return True
-        if hasattr(self, "table_suggested_candidates") and watched == self.table_suggested_candidates:
-            if event.type() == QEvent.Type.KeyPress:
-                key = event.key()
-                if key == Qt.Key.Key_Space:
-                    self._toggle_selected_candidate_checkboxes()
-                    return True
-                elif key in (Qt.Key.Key_A, Qt.Key.Key_Return, Qt.Key.Key_Enter):
-                    self._on_accept_selected_candidates()
-                    return True
-                elif key in (Qt.Key.Key_X, Qt.Key.Key_Delete, Qt.Key.Key_Backspace):
-                    self._on_dismiss_selected_candidates()
-                    return True
         return super().eventFilter(watched, event)
 
     def clear_cluster_comparison(self, return_to_suggestion: bool = True) -> None:
@@ -6054,10 +5699,6 @@ class ClusteringView(QWidget):
             if w is not None:
                 w.deleteLater()
         self.comparison_viewers.clear()
-
-        if hasattr(self, "table_suggested_candidates"):
-            self.table_suggested_candidates.setRowCount(0)
-        self._current_suggested_candidates.clear()
 
         if hasattr(self, "marginal_widget"):
             self.marginal_widget.clear_cluster_distribution()
@@ -6177,6 +5818,7 @@ class ClusteringView(QWidget):
         if src_id not in self._cluster_card_order or tgt_id not in self._cluster_card_order:
             return False
 
+        self._push_undo_snapshot()
         idx_src = self._cluster_card_order.index(src_id)
         idx_tgt = self._cluster_card_order.index(tgt_id)
         self._cluster_card_order[idx_src], self._cluster_card_order[idx_tgt] = (
@@ -6264,6 +5906,73 @@ class ClusteringView(QWidget):
         self.cluster_merged.emit(src_id, tgt_id)
         return True
 
+    def _optimistic_next_queue_candidate(self) -> Optional[ActiveLearningCandidate]:
+        """Select the next eligible queue candidate from cached rankings while worker retrains."""
+        cur = getattr(self, "active_candidate", None)
+        cur_gid = cur.global_unit_id if cur is not None else None
+        skipped = getattr(self, "_skipped_gids", set())
+
+        has_unassigned = any(
+            int(rec.get("cluster_id", -1)) < 0
+            for rec in self._pooled_units_map.values()
+        )
+
+        def _is_eligible(gid: str) -> bool:
+            if gid not in self._pooled_units_map:
+                return False
+            rec = self._pooled_units_map[gid]
+            status = self._unit_status_map.get(gid, rec.get("status", "Unassigned"))
+            if status in ("Curated", "Auto-assigned"):
+                return False
+            if has_unassigned and int(rec.get("cluster_id", -1)) >= 0:
+                return False
+            return True
+
+        # Keep current candidate if still eligible and unskipped
+        if cur_gid is not None and _is_eligible(cur_gid) and cur_gid not in skipped:
+            return cur
+
+        ranked = getattr(self, "ranked_candidates", []) or []
+        for cand in ranked:
+            if _is_eligible(cand.global_unit_id) and cand.global_unit_id not in skipped:
+                return cand
+        for cand in ranked:
+            if cand.global_unit_id != cur_gid and _is_eligible(cand.global_unit_id):
+                return cand
+        for cand in ranked:
+            if _is_eligible(cand.global_unit_id):
+                return cand
+
+        # If a unit was newly unassigned (not yet in stale ranked_candidates), focus it instead of drifting
+        if has_unassigned:
+            for gid, rec in self._pooled_units_map.items():
+                if int(rec.get("cluster_id", -1)) < 0 and _is_eligible(gid) and gid not in skipped:
+                    uid_val = rec.get("unit_id", 0)
+                    try:
+                        uid_int = int(uid_val)
+                    except (TypeError, ValueError):
+                        uid_int = 0
+                    return ActiveLearningCandidate(
+                        global_unit_id=str(gid),
+                        entropy=0.0,
+                        probabilities=dict(self._all_unit_probabilities.get(gid, {})),
+                        feature_values={},
+                        cluster_id=-1,
+                        session_id=str(rec.get("session_id", "")),
+                        unit_id=uid_int,
+                    )
+        return None
+
+    def _invalidate_active_learning_worker(self) -> None:
+        """Invalidate any in-flight ActiveLearningWorker so stale results cannot be applied."""
+        self._worker_request_id = getattr(self, "_worker_request_id", 0) + 1
+        worker = getattr(self, "_active_learning_worker", None)
+        if worker is not None and worker.isRunning():
+            try:
+                worker.results_ready.disconnect()
+            except Exception:
+                pass
+
     def refresh_active_learning(self, synchronous: Optional[bool] = None) -> Optional[ActiveLearningCandidate]:
         """Evaluate Maximum Shannon Entropy on unassigned/boundary units and trigger auto-assignment."""
         if (
@@ -6287,6 +5996,8 @@ class ClusteringView(QWidget):
 
         df = pd.DataFrame(pooled_records)
         if df.empty or len(df) == 0:
+            self._invalidate_active_learning_worker()
+            self.ranked_candidates = []
             self.active_candidate = None
             if len(self.loaded_experiments) == 0 and not self._is_mock:
                 self.lbl_candidate.setText("No Experiment Selected")
@@ -6307,7 +6018,7 @@ class ClusteringView(QWidget):
             else np.array([r.get("cluster_id", -1) for r in pooled_records], dtype=np.int32)
         )
 
-        is_sync = synchronous if synchronous is not None else ("pytest" in sys.modules)
+        is_sync = bool(synchronous)
 
         feat_mat = (
             self.current_clustering_result.feature_matrix
@@ -6320,89 +6031,8 @@ class ClusteringView(QWidget):
         )
 
         if is_sync:
-            # 1. Compute auto-assignments synchronously
             spike_map = self._get_cached_spike_data_map(df)
-            pulse_dur_ms = self._get_pulse_duration_ms()
-            n_est = max(10, int(getattr(self, "al_n_estimators", 100)))
-            rand_seed = int(getattr(self, "al_random_state", 42))
-            max_dist = float(getattr(self, "al_max_distance_sigma", 3.5))
-            raw_auto_assignments, confidences, all_probs = compute_auto_assignments(
-                df=df,
-                cluster_labels=labels,
-                unit_status_map=self._unit_status_map,
-                threshold=self.auto_assign_threshold,
-                max_distance_sigma=max_dist,
-                feature_config=self.feature_config,
-                feature_matrix=feat_mat,
-                n_estimators=n_est,
-                random_state=rand_seed,
-                spike_data_map=spike_map,
-                psth_cache=self._unit_psth_cache,
-                return_all_probabilities=True,
-                pulse_duration_ms=pulse_dur_ms,
-            )
-
-            # Route auto_assignments and suggested_assignments based on auto_assign_enabled
-            if getattr(self, "auto_assign_enabled", False):
-                auto_assignments = {gid: cid for gid, cid in raw_auto_assignments.items() if cid >= 0}
-                suggested_assignments: Dict[str, int] = {}
-            else:
-                auto_assignments = {}
-                suggested_assignments = {
-                    gid: cid
-                    for gid, cid in raw_auto_assignments.items()
-                    if cid >= 0 and self._unit_status_map.get(gid, "Unassigned") not in ("Curated", "Seeded")
-                }
-            self._suggested_auto_assignments = suggested_assignments
-
-            # 2. Derive updated temporary labels incorporating auto-assignments
-            temp_labels = np.array(labels, copy=True)
-            unit_ids = (
-                df["global_unit_id"].astype(str).tolist()
-                if "global_unit_id" in df.columns
-                else [f"u_{i}" for i in range(len(df))]
-            )
-            for i, gid in enumerate(unit_ids):
-                status = self._unit_status_map.get(gid, "Unassigned")
-                if status == "Curated":
-                    continue
-                if gid in auto_assignments:
-                    pred_cid = auto_assignments[gid]
-                    if pred_cid >= 0:
-                        temp_labels[i] = pred_cid
-                    elif status not in ("Seeded", "Curated"):
-                        temp_labels[i] = -1
-
-            # 3. Compute pure Maximum Shannon Entropy ranking with skipped units cycled to back
-            ranked = compute_entropy_ranking(
-                df=df,
-                cluster_labels=temp_labels,
-                unit_status_map=self._unit_status_map,
-                feature_matrix=feat_mat,
-                skipped_unit_ids=self._skipped_gids,
-                n_estimators=n_est,
-                random_state=rand_seed,
-                cycle_skipped=True,
-                feature_config=self.feature_config,
-                spike_data_map=spike_map,
-                psth_cache=self._unit_psth_cache,
-                pulse_duration_ms=pulse_dur_ms,
-            )
-            self._apply_active_learning_results(ranked, auto_assignments, confidences, all_probs, suggested_assignments)
-            return self.active_candidate
-        else:
-            # Run via asynchronous background worker QThread with cooperative request versioning
-            if self._active_learning_worker is not None and self._active_learning_worker.isRunning():
-                try:
-                    self._active_learning_worker.results_ready.disconnect()
-                except Exception:
-                    pass
-
-            self._worker_request_id = getattr(self, "_worker_request_id", 0) + 1
-            current_req_id = self._worker_request_id
-
-            spike_map = self._get_cached_spike_data_map(df)
-            worker = ActiveLearningWorker(
+            ranked, auto_assignments, confidences, all_probs, suggested_assignments = run_active_learning_cycle(
                 df=df,
                 cluster_labels=labels,
                 unit_status_map=self._unit_status_map,
@@ -6411,14 +6041,41 @@ class ClusteringView(QWidget):
                 feature_config=self.feature_config,
                 feature_matrix=feat_mat,
                 skipped_gids=self._skipped_gids,
+                n_estimators=max(10, int(getattr(self, "al_n_estimators", 100))),
                 random_state=int(getattr(self, "al_random_state", 42)),
                 spike_data_map=spike_map,
                 psth_cache=self._unit_psth_cache,
+                auto_assign_enabled=bool(getattr(self, "auto_assign_enabled", False)),
+                pulse_duration_ms=self._get_pulse_duration_ms(),
+            )
+            self._apply_active_learning_results(ranked, auto_assignments, confidences, all_probs, suggested_assignments)
+            return self.active_candidate
+        else:
+            # Run via asynchronous background worker QThread with cooperative request versioning
+            self._invalidate_active_learning_worker()
+            current_req_id = self._worker_request_id
+
+            spike_map = self._get_cached_spike_data_map(df)
+            # Parentless QThread retained until finished so C++ widget destruction never kills a live thread
+            worker = ActiveLearningWorker(
+                df=df.copy(),
+                cluster_labels=np.array(labels, copy=True),
+                unit_status_map=dict(self._unit_status_map),
+                threshold=self.auto_assign_threshold,
+                max_distance_sigma=float(getattr(self, "al_max_distance_sigma", 3.5)),
+                feature_config=self.feature_config,
+                feature_matrix=feat_mat.copy() if feat_mat is not None else None,
+                skipped_gids=set(self._skipped_gids),
+                random_state=int(getattr(self, "al_random_state", 42)),
+                spike_data_map=dict(spike_map) if spike_map is not None else None,
+                psth_cache=dict(self._unit_psth_cache),
                 auto_assign_enabled=getattr(self, "auto_assign_enabled", False),
                 n_estimators=max(10, int(getattr(self, "al_n_estimators", 100))),
                 pulse_duration_ms=self._get_pulse_duration_ms(),
-                parent=self,
+                parent=None,
             )
+
+            self_ref = weakref.ref(self)
 
             def _on_worker_results(
                 cands: List[ActiveLearningCandidate],
@@ -6427,10 +6084,48 @@ class ClusteringView(QWidget):
                 all_probs: Optional[Dict[str, Dict[int, float]]] = None,
                 suggested: Optional[Dict[str, int]] = None,
             ) -> None:
-                if getattr(self, "_worker_request_id", 0) == current_req_id:
-                    self._apply_active_learning_results(cands, autos, confs, all_probs, suggested)
+                owner = self_ref()
+                if owner is None or getattr(owner, "_is_closing", False):
+                    return
+                try:
+                    owner.isVisible()
+                except RuntimeError:
+                    return
+                if getattr(owner, "_worker_request_id", 0) == current_req_id:
+                    prev_active_gid = (
+                        owner.active_candidate.global_unit_id if owner.active_candidate is not None else None
+                    )
+                    owner._apply_active_learning_results(cands, autos, confs, all_probs, suggested)
+                    if (
+                        owner.active_learning_enabled
+                        and getattr(owner, "_focus_source", None) == "queue"
+                        and not getattr(owner, "_is_applying_undo_redo", False)
+                        and owner.active_candidate is not None
+                        and (current_req_id, owner.active_candidate.global_unit_id)
+                        != getattr(owner, "_skip_guard", None)
+                        and (
+                            owner.active_candidate.global_unit_id != prev_active_gid
+                            or owner._current_selected_gid != owner.active_candidate.global_unit_id
+                        )
+                    ):
+                        owner.select_pooled_unit(owner.active_candidate.global_unit_id, source="queue")
+
+            def _cleanup_worker(w: ActiveLearningWorker = worker) -> None:
+                _ACTIVE_AL_WORKERS.discard(w)
+                owner = self_ref()
+                if owner is not None:
+                    owner._tracked_al_workers = [
+                        tw for tw in getattr(owner, "_tracked_al_workers", []) if tw is not w
+                    ]
 
             worker.results_ready.connect(_on_worker_results)
+            worker.finished.connect(_cleanup_worker)
+            _ACTIVE_AL_WORKERS.add(worker)
+            self.active_candidate = self._optimistic_next_queue_candidate()
+            self._tracked_al_workers = [
+                tw for tw in getattr(self, "_tracked_al_workers", []) if tw.isRunning()
+            ]
+            self._tracked_al_workers.append(worker)
             self._active_learning_worker = worker
             worker.start()
             return self.active_candidate
@@ -6464,8 +6159,8 @@ class ClusteringView(QWidget):
             if gid not in self._pooled_units_map:
                 continue
             cur_status = self._unit_status_map.get(gid, "Unassigned")
-            if cur_status == "Curated":
-                continue  # Curated units are permanently locked!
+            if cur_status in ("Curated", "Seeded"):
+                continue  # Curated and Seeded units are not re-evaluated by the classifier!
 
             old_cid = self._pooled_units_map[gid].get("cluster_id", -1)
             if pred_cid >= 0:
@@ -6589,24 +6284,7 @@ class ClusteringView(QWidget):
                         target_gids.append(k)
                         break
         else:
-            in_list_panel = (
-                getattr(self, "_focus_source", None) == "list_candidates"
-                or (hasattr(self, "table_list_panel") and self.table_list_panel.hasFocus())
-            )
-            if in_list_panel:
-                target_gids = self._get_list_panel_selected_gids()
-            elif hasattr(self, "table_pooled_units") and self.table_pooled_units.selectionModel() is not None:
-                selected_model_rows = self.table_pooled_units.selectionModel().selectedRows()
-                for model_idx in selected_model_rows:
-                    r = model_idx.row()
-                    gid_val = self._get_gid_for_row(r)
-                    if gid_val and gid_val in self._pooled_units_map:
-                        target_gids.append(gid_val)
-            if not target_gids:
-                if self._current_selected_gid is not None and self._current_selected_gid in self._pooled_units_map:
-                    target_gids.append(self._current_selected_gid)
-                elif self.active_candidate is not None:
-                    target_gids.append(self.active_candidate.global_unit_id)
+            target_gids = self._resolve_selected_target_gids()
 
         # Deduplicate while preserving order
         seen = set()
@@ -6693,9 +6371,6 @@ class ClusteringView(QWidget):
         if not self._is_applying_undo_redo:
             self._advance_after_action(advance_ctx, is_skip=False)
 
-        # Pre-render immediately into cache and schedule prewarm
-        for gid in unique_gids:
-            self._get_or_render_unit_pixmap(gid)
         self._schedule_background_plot_prewarm(unique_gids)
         self._preserve_cleared_selection = False
 
@@ -6832,6 +6507,7 @@ class ClusteringView(QWidget):
 
         next_cand: Optional[ActiveLearningCandidate] = None
         if advance_ctx["source"] == "queue" and self.active_learning_enabled:
+            self._skip_guard = (getattr(self, "_worker_request_id", 0) + 1, target_gid)
             next_cand = self.refresh_active_learning()
             if next_cand is not None:
                 self.select_pooled_unit(next_cand.global_unit_id, source="queue")
@@ -6858,6 +6534,7 @@ class ClusteringView(QWidget):
             "cluster_colors": dict(self._cluster_colors),
             "cluster_hotkeys": dict(self._cluster_hotkeys),
             "cluster_card_order": list(self._cluster_card_order),
+            "cluster_sort_mode": getattr(self, "_cluster_sort_mode", "id"),
             "focused_gid": focused_gid,
             "focus_source": getattr(self, "_focus_source", "queue"),
             "comparison_cluster_id": self._comparison_cluster_id,
@@ -6899,9 +6576,17 @@ class ClusteringView(QWidget):
 
             self._skipped_gids = set(snap["skipped_gids"])
             self._cluster_names = dict(snap["cluster_names"])
-            self._cluster_colors = dict(snap["cluster_colors"])
+            self._cluster_colors.clear()
+            self._cluster_colors.update(snap["cluster_colors"])
+            if hasattr(self, "cluster_color_service"):
+                self.cluster_color_service.set_colors(dict(snap["cluster_colors"]))
             self._cluster_hotkeys = dict(snap["cluster_hotkeys"])
             self._cluster_card_order = list(snap["cluster_card_order"])
+            self._cluster_sort_mode = snap.get("cluster_sort_mode", getattr(self, "_cluster_sort_mode", "id"))
+            for sort_key, sort_act in getattr(self, "_sort_actions", {}).items():
+                sort_act.blockSignals(True)
+                sort_act.setChecked(sort_key == self._cluster_sort_mode)
+                sort_act.blockSignals(False)
 
             self._sync_clustering_result_and_cards()
             self._update_all_pooled_cluster_items()
@@ -6938,6 +6623,7 @@ class ClusteringView(QWidget):
         self._redo_stack.append(self._capture_curation_snapshot())
         snap = self._undo_stack.pop()
         self._restore_curation_snapshot(snap)
+        self._set_dirty(True)
         return True
 
     def redo(self) -> bool:
@@ -6947,6 +6633,7 @@ class ClusteringView(QWidget):
         self._undo_stack.append(self._capture_curation_snapshot())
         snap = self._redo_stack.pop()
         self._restore_curation_snapshot(snap)
+        self._set_dirty(True)
         return True
 
     def unassign_focused_unit(self) -> bool:
@@ -7220,7 +6907,7 @@ class ClusteringView(QWidget):
             target_gid = points[0].data()
 
         if target_gid:
-            self.select_pooled_unit(str(target_gid))
+            self.select_pooled_unit(str(target_gid), source="queue")
 
     def _update_probe_marker(self, depth: float, x: float = 0.0, session_id: Optional[str] = None) -> None:
         """Update silicon probe depth marker to candidate's channel/depth."""
@@ -7647,171 +7334,36 @@ class ClusteringView(QWidget):
                     gaussian_sigma_ms=self.psth_gaussian_sigma_ms,
                 )
 
-        # Fallback for mock mode or units without raw spike recordings
-        if psth_data is None:
-            lat = float(rec.get("latency_ms", 5.0))
-            if np.isnan(lat) or lat >= 500:
-                lat = 5.0
-            rel = float(rec.get("reliability", 0.8))
-            if np.isnan(rel):
-                rel = 0.8
-            seed_id = int_uid if int_uid is not None else (abs(hash(gid)) % 1000)
-            np.random.seed(seed_id * 42 + 7)
-            n_trials = 40
-            mock_onsets = np.arange(1.0, 1.0 + n_trials * 0.5, 0.5)
-            mock_spikes_list = []
-            for t_pulse in mock_onsets:
-                n_bg = np.random.poisson(2)
-                for t in t_pulse + np.random.uniform(-0.1, 0.1, n_bg):
-                    mock_spikes_list.append(t)
-                if np.random.rand() < rel:
-                    mock_spikes_list.append(t_pulse + float(np.random.normal(lat / 1000.0, 0.0012)))
-            mock_spikes = np.sort(np.array(mock_spikes_list))
-            psth_data = compute_psth_and_raster(
-                mock_spikes,
-                mock_onsets,
-                window_ms=self.current_window_ms,
-                bin_size_ms=self.current_bin_size_ms,
-                order_by=self.raster_order_by,
-                smooth=self.psth_smooth,
-                gaussian_sigma_ms=self.psth_gaussian_sigma_ms,
-            )
-
         if psth_data is not None:
             self._unit_raster_psth_cache[cache_key] = psth_data
             psth_rates = psth_data.get("psth_rates")
             if psth_rates is not None:
-                psth_cache_key = (
-                    str(gid),
-                    (float(self.current_window_ms[0]), float(self.current_window_ms[1])),
-                    float(self.current_bin_size_ms),
-                    bool(self.psth_smooth),
-                    float(self.psth_gaussian_sigma_ms),
-                )
                 self._unit_psth_cache[psth_cache_key] = psth_rates
         return psth_data
 
-    def _ensure_offscreen_renderer(self) -> None:
-        """Lazily initialize offscreen pyqtgraph canvas for background pixmap generation."""
-        if self._offscreen_scene is not None:
-            return
-
-        self._offscreen_scene = pg.GraphicsScene()
-        self._offscreen_layout = pg.GraphicsLayout()
-        self._offscreen_scene.addItem(self._offscreen_layout)
-        self._offscreen_plot_canvas = self._offscreen_scene  # Compatibility alias
-
-        self._offscreen_raster_plot = self._offscreen_layout.addPlot(row=0, col=0)
-        self._offscreen_raster_plot.setTitle(None)
-        self._offscreen_raster_plot.hideAxis("bottom")
-        self._offscreen_raster_plot.getAxis("left").setWidth(DEFAULT_Y_AXIS_WIDTH)
-        self._offscreen_raster_plot.setMouseEnabled(x=False, y=False)
-
-        self._offscreen_psth_plot = self._offscreen_layout.addPlot(row=1, col=0)
-        self._offscreen_psth_plot.setTitle(None)
-        self._offscreen_psth_plot.setXLink(self._offscreen_raster_plot)
-        self._offscreen_psth_plot.getAxis("left").setWidth(DEFAULT_Y_AXIS_WIDTH)
-        self._offscreen_psth_plot.setMouseEnabled(x=False, y=False)
-
-        if hasattr(self._offscreen_layout, "layout"):
-            self._offscreen_layout.layout.setSpacing(2)
-            self._offscreen_layout.layout.setRowStretchFactor(0, 12)
-            self._offscreen_layout.layout.setRowStretchFactor(1, 10)
-
-        for p_item in (self._offscreen_raster_plot, self._offscreen_psth_plot):
-            for ax_name in ("left", "bottom", "right", "top"):
-                ax = p_item.getAxis(ax_name)
-                if ax is not None:
-                    ax.deviceTransform_ = lambda a=ax: a.deviceTransform(QTransform())
-
-        self._offscreen_scene.setSceneRect(0, 0, 480, 280)
-        self._offscreen_layout.setGeometry(QRectF(0, 0, 480, 280))
-        if hasattr(self._offscreen_layout, "layout") and self._offscreen_layout.layout is not None:
-            self._offscreen_layout.layout.activate()
-
-    def _get_or_render_unit_pixmap(self, gid: str) -> Optional[QPixmap]:
-        """Retrieve pre-rendered QPixmap from cache or render offscreen immediately."""
-        if not gid or gid not in self._pooled_units_map:
-            return None
-
-        cache_key = (
-            str(gid),
-            (float(self.current_window_ms[0]), float(self.current_window_ms[1])),
-            float(self.current_bin_size_ms),
-            str(self.raster_order_by),
-            float(self.raster_marker_size),
-            bool(self.psth_smooth),
-            float(self.psth_gaussian_sigma_ms),
+    def shutdown_background_workers(self) -> None:
+        """Cancel pending background prewarm and active learning work cleanly before teardown."""
+        self._is_closing = True
+        self._reset_background_prewarm(clear_pixmaps=False)
+        workers = list(getattr(self, "_tracked_al_workers", [])) + list(
+            self.findChildren(ActiveLearningWorker)
         )
-        if cache_key in self._unit_pixmap_cache:
-            return self._unit_pixmap_cache[cache_key]
-
-        psth_data = self._get_raster_and_psth_for_unit(gid)
-        if psth_data is None:
-            return None
-
-        self._ensure_offscreen_renderer()
-        if self._offscreen_raster_plot is None or self._offscreen_psth_plot is None or self._offscreen_scene is None:
-            return None
-
-        render_raster(
-            self._offscreen_raster_plot,
-            raster_x=psth_data.get("raster_x", np.array([])),
-            raster_y=psth_data.get("raster_y", np.array([])),
-            n_trials=psth_data.get("n_trials", 0),
-            title=None,
-            x_range=self.current_window_ms,
-            order_by=self.raster_order_by,
-            show_x_axis=False,
-            marker_size=self.raster_marker_size,
-        )
-
-        render_psth(
-            self._offscreen_psth_plot,
-            psth_bins=psth_data.get("psth_bins", np.array([])),
-            psth_rates=psth_data.get("psth_rates", np.array([])),
-            baseline_mean=psth_data.get("baseline_mean", 0.0),
-            baseline_3sigma=psth_data.get("baseline_3sigma", 0.0),
-            title=None,
-            x_range=self.current_window_ms,
-            show_x_axis=True,
-            is_smooth=psth_data.get("is_smooth", self.psth_smooth),
-        )
-
-        self._offscreen_raster_plot.setTitle(None)
-        self._offscreen_psth_plot.setTitle(None)
-
-        compact_raster_label = "Trial # (Latency)" if self.raster_order_by == "latency" else "Trial # (Order)"
-        self._offscreen_raster_plot.setLabel("left", compact_raster_label)
-
-        QApplication.sendPostedEvents(None, int(QEvent.Type.LayoutRequest))
-        if hasattr(self._offscreen_layout, "layout") and self._offscreen_layout.layout is not None:
-            self._offscreen_layout.layout.activate()
-        for p_item in (self._offscreen_raster_plot, self._offscreen_psth_plot):
-            if hasattr(p_item, "layout") and p_item.layout is not None:
-                p_item.layout.activate()
-            for ax_name in ("left", "bottom"):
-                ax = p_item.getAxis(ax_name)
-                if ax is not None:
-                    ax.resizeEvent(None)
-                    ax.picture = None
-
-        img = QImage(480, 280, QImage.Format.Format_ARGB32)
-        img.fill(QColor(COLOR_PANEL))
-        painter = QPainter(img)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-        self._offscreen_scene.render(painter, QRectF(0, 0, 480, 280), QRectF(0, 0, 480, 280))
-        painter.end()
-
-        pixmap = QPixmap.fromImage(img)
-        if pixmap is not None and not pixmap.isNull():
-            self._unit_pixmap_cache[cache_key] = pixmap
-            return pixmap
-        return None
+        seen_ids: Set[int] = set()
+        for worker in workers:
+            if id(worker) in seen_ids:
+                continue
+            seen_ids.add(id(worker))
+            if worker.isRunning():
+                try:
+                    worker.results_ready.disconnect()
+                except Exception:
+                    pass
+                worker.wait(5000)
+            _ACTIVE_AL_WORKERS.discard(worker)
 
     def closeEvent(self, event: Any) -> None:
-        """Cancel pending background prewarm work cleanly before teardown."""
-        self._reset_background_prewarm(clear_pixmaps=False)
+        """Shut down background workers cleanly before closing."""
+        self.shutdown_background_workers()
         super().closeEvent(event)
 
     def _member_render_key(self, gid: str) -> Tuple[Any, ...]:
@@ -7929,7 +7481,6 @@ class ClusteringView(QWidget):
             self._scroll_hydrate_timer.stop()
         if clear_pixmaps:
             self._member_pixmap_cache.clear()
-            self._unit_pixmap_cache.clear()
 
     def _kick_prewarm_data_worker(self) -> None:
         """Dispatch next pure-NumPy compute_psth_and_raster batch to QThreadPool."""
@@ -7978,10 +7529,20 @@ class ClusteringView(QWidget):
         runnable = _PrewarmBatchRunnable(self._prewarm_generation, batch_items, self._prewarm_signals)
         QThreadPool.globalInstance().start(runnable)
 
+    def _continue_prewarm_queues(self) -> None:
+        """Resume any queued background raster/PSTH or pixmap prewarm work if not closing."""
+        if getattr(self, "_is_closing", False):
+            return
+        if self._prewarm_data_queue:
+            self._kick_prewarm_data_worker()
+        if self._prewarm_queue and not self._prewarm_timer.isActive():
+            self._prewarm_timer.start(10)
+
     def _on_prewarm_batch_ready(self, generation: int, results: List[Tuple[Any, Any, Dict[str, Any]]]) -> None:
         """Store worker-computed raster/PSTH results on the GUI thread and continue warming."""
         self._prewarm_worker_active = False
         if generation != self._prewarm_generation:
+            self._continue_prewarm_queues()
             return
         for cache_key, psth_key, psth_data in results:
             if cache_key not in self._unit_raster_psth_cache:
@@ -7992,10 +7553,7 @@ class ClusteringView(QWidget):
             gid = str(cache_key[0])
             if self._member_render_key(gid) not in self._member_pixmap_cache and gid not in self._prewarm_queue:
                 self._prewarm_queue.append(gid)
-        if self._prewarm_data_queue:
-            self._kick_prewarm_data_worker()
-        if self._prewarm_queue and not self._prewarm_timer.isActive():
-            self._prewarm_timer.start(10)
+        self._continue_prewarm_queues()
 
     def _schedule_background_plot_prewarm(
         self,
@@ -8260,6 +7818,12 @@ class ClusteringView(QWidget):
             psth_smooth=self.psth_smooth,
             psth_gaussian_sigma_ms=self.psth_gaussian_sigma_ms,
             cluster_psth_norm=self.cluster_psth_norm,
+            al_n_estimators=self.al_n_estimators,
+            al_random_state=self.al_random_state,
+            al_max_distance_sigma=self.al_max_distance_sigma,
+            overlay_focused_unit_enabled=self.overlay_focused_unit_enabled,
+            shared_y_axis_enabled=self.shared_y_axis_enabled,
+            cluster_sort_mode=self._cluster_sort_mode,
         )
 
         # 3. Collect cluster definitions
@@ -8411,13 +7975,21 @@ class ClusteringView(QWidget):
                 )
                 return False
 
-            success = self.add_experiment_folder(resolved_folder)
+            success = self.add_experiment_folder(resolved_folder, _defer_refresh=True)
             if not success:
                 QMessageBox.warning(
                     self,
                     "Experiment Ingestion Warning",
                     f"Experiment '{exp_ref.session_id}' at '{resolved_folder}' could not be loaded into the pool.",
                 )
+
+        if self.loaded_experiments:
+            self._invalidate_clustering_caches()
+            self._invalidate_probe_caches()
+            self._refresh_pooled_units_table()
+            self._refresh_experiments_table()
+            if hasattr(self, "marginal_widget"):
+                self.marginal_widget.update_distributions(self._get_active_pooled_dataframe())
 
         # Reconstruct model parameters
         params_dict = deserialize_model_parameters(data.model_parameters)
@@ -8438,6 +8010,12 @@ class ClusteringView(QWidget):
         self.psth_smooth = params_dict.get("psth_smooth", True)
         self.psth_gaussian_sigma_ms = params_dict.get("psth_gaussian_sigma_ms", 2.0)
         self.cluster_psth_norm = params_dict.get("cluster_psth_norm", "probability")
+        self.al_n_estimators = int(params_dict.get("al_n_estimators", 100))
+        self.al_random_state = int(params_dict.get("al_random_state", 42))
+        self.al_max_distance_sigma = float(params_dict.get("al_max_distance_sigma", 3.5))
+        self.overlay_focused_unit_enabled = bool(params_dict.get("overlay_focused_unit_enabled", True))
+        self.shared_y_axis_enabled = bool(params_dict.get("shared_y_axis_enabled", False))
+        self._cluster_sort_mode = str(params_dict.get("cluster_sort_mode", "id"))
         if self.active_clustering_params is not None:
             self.active_clustering_params.cluster_psth_norm = self.cluster_psth_norm
 
@@ -8446,6 +8024,13 @@ class ClusteringView(QWidget):
             norm_idx = {"peak": 0, "probability": 1, "raw": 2}.get(self.cluster_psth_norm, 1)
             self.combo_psth_norm.setCurrentIndex(norm_idx)
             self.combo_psth_norm.blockSignals(False)
+
+        if hasattr(self, "combo_embedding_method"):
+            self.combo_embedding_method.blockSignals(True)
+            emb_idx = self.combo_embedding_method.findData(str(self.embedding_params.method).upper())
+            if emb_idx >= 0:
+                self.combo_embedding_method.setCurrentIndex(emb_idx)
+            self.combo_embedding_method.blockSignals(False)
 
         if hasattr(self, "chk_smooth"):
             self.chk_smooth.blockSignals(True)
@@ -8456,9 +8041,25 @@ class ClusteringView(QWidget):
             self.spin_sigma.setValue(self.psth_gaussian_sigma_ms)
             self.spin_sigma.blockSignals(False)
         if hasattr(self, "slider_threshold"):
+            self.slider_threshold.blockSignals(True)
             self.slider_threshold.setValue(int(round(self.auto_assign_threshold * 100)))
+            self.slider_threshold.blockSignals(False)
         if hasattr(self, "chk_auto_assign"):
+            self.chk_auto_assign.blockSignals(True)
             self.chk_auto_assign.setChecked(self.auto_assign_enabled)
+            self.chk_auto_assign.blockSignals(False)
+        if hasattr(self, "act_overlay_focused_unit"):
+            self.act_overlay_focused_unit.blockSignals(True)
+            self.act_overlay_focused_unit.setChecked(self.overlay_focused_unit_enabled)
+            self.act_overlay_focused_unit.blockSignals(False)
+        if hasattr(self, "act_shared_y_axis"):
+            self.act_shared_y_axis.blockSignals(True)
+            self.act_shared_y_axis.setChecked(self.shared_y_axis_enabled)
+            self.act_shared_y_axis.blockSignals(False)
+        for sort_key, sort_act in getattr(self, "_sort_actions", {}).items():
+            sort_act.blockSignals(True)
+            sort_act.setChecked(sort_key == self._cluster_sort_mode)
+            sort_act.blockSignals(False)
         self._update_active_learning_button_style()
 
         # Restore cluster definitions
@@ -8540,6 +8141,8 @@ class ClusteringView(QWidget):
 
         # Trigger full re-rendering
         self._recompute_and_render_clusters()
+        if self.shared_y_axis_enabled:
+            self._apply_shared_y_axis()
         self._refresh_cluster_shortcuts()
         self._update_all_pooled_cluster_items()
         self._populate_cluster_filter_options()
@@ -8591,6 +8194,7 @@ class ClusteringView(QWidget):
 
     def close_clustering_project(self) -> None:
         """Close the current clustering project and reset workspace to clean empty state."""
+        self._invalidate_active_learning_worker()
         self.clear_all_experiments()
         self._skipped_gids.clear()
         self._dismissed_cluster_candidates.clear()
@@ -8673,7 +8277,7 @@ class ClusteringView(QWidget):
                 return True
         return False
 
-    def add_experiment_folder(self, folder_path: Optional[Union[str, Path]] = None) -> bool:
+    def add_experiment_folder(self, folder_path: Optional[Union[str, Path]] = None, _defer_refresh: bool = False) -> bool:
         """Add and validate a Phase 1 curated experiment directory into the multi-experiment pool.
 
         Args:
@@ -8744,48 +8348,7 @@ class ClusteringView(QWidget):
             progress.setLabelText("Loading spike timing and stimulus pulses...")
             QApplication.processEvents()
 
-            spikes_dict: Dict[int, np.ndarray] = {}
-            pulse_onsets: Optional[np.ndarray] = None
-            pulse_offsets: Optional[np.ndarray] = None
-
-            # 1. Check for cached <session_id>_spikes.npz in arrays_dir first, then folder_path, then parent
-            npz_candidates = []
-            if hasattr(meta, "arrays_dir") and meta.arrays_dir and meta.arrays_dir.is_dir():
-                npz_candidates.extend(list(meta.arrays_dir.glob(f"{meta.session_id}_spikes.npz")))
-                if not npz_candidates:
-                    npz_candidates.extend(list(meta.arrays_dir.glob("*_spikes.npz")))
-            if not npz_candidates:
-                arr_sub = meta.folder_path / f"{meta.session_id}_arrays"
-                if arr_sub.is_dir():
-                    npz_candidates.extend(list(arr_sub.glob(f"{meta.session_id}_spikes.npz")))
-                    if not npz_candidates:
-                        npz_candidates.extend(list(arr_sub.glob("*_spikes.npz")))
-            if not npz_candidates:
-                npz_candidates.extend(list(meta.folder_path.glob(f"{meta.session_id}_spikes.npz")))
-            if not npz_candidates:
-                npz_candidates.extend(list(meta.folder_path.glob("*_spikes.npz")))
-            if not npz_candidates and meta.folder_path.parent.is_dir():
-                npz_candidates.extend(list(meta.folder_path.parent.glob(f"{meta.session_id}_spikes.npz")))
-
-            npz_dict: Dict[str, Any] = {}
-            if npz_candidates:
-                try:
-                    with np.load(npz_candidates[0], allow_pickle=True) as data:
-                        for k in data.files:
-                            npz_dict[k] = data[k]
-                        if "pulse_onsets" in npz_dict:
-                            pulse_onsets = np.asarray(npz_dict["pulse_onsets"], dtype=np.float64)
-                        if "pulse_offsets" in npz_dict:
-                            pulse_offsets = np.asarray(npz_dict["pulse_offsets"], dtype=np.float64)
-                        for k in npz_dict:
-                            if k.startswith("unit_"):
-                                try:
-                                    u_id = int(k.replace("unit_", ""))
-                                    spikes_dict[u_id] = np.asarray(npz_dict[k], dtype=np.float64)
-                                except ValueError:
-                                    pass
-                except Exception:
-                    pass
+            spikes_dict, pulse_onsets, pulse_offsets, npz_dict = load_phase1_session_arrays(meta)
 
             # Resolve experiment probe geometry and unit coordinates
             probe_pos, resolved_df = self._resolve_experiment_probe_and_unit_positions(
@@ -8795,75 +8358,6 @@ class ClusteringView(QWidget):
                 npz_data=npz_dict if npz_dict else None,
             )
             meta.df = resolved_df
-
-            # 2. If spikes or stimulus not found in npz, check raw session data (Kilosort & stimulus files)
-            if not spikes_dict or pulse_onsets is None:
-                try:
-                    raw_dirs = [meta.folder_path]
-                    if meta.folder_path.name.lower() in ("sorted_dir", "kilosort", "sorter_output") and meta.folder_path.parent.is_dir():
-                        raw_dirs.append(meta.folder_path.parent)
-
-                    st_file = None
-                    sc_file = None
-                    st_dir = None
-                    for r_dir in raw_dirs:
-                        if (r_dir / "spike_times.npy").is_file() and (r_dir / "spike_clusters.npy").is_file():
-                            st_file = r_dir / "spike_times.npy"
-                            sc_file = r_dir / "spike_clusters.npy"
-                            st_dir = r_dir
-                            break
-
-                    if st_file and not spikes_dict:
-                        phy_reader = PhyKilosortReader()
-                        s_rate = phy_reader._read_sampling_rate(st_dir)
-                        st_raw = np.load(st_file).flatten()
-                        sc_raw = np.load(sc_file).flatten()
-                        if np.issubdtype(st_raw.dtype, np.integer) or np.nanmax(st_raw) > 10000.0:
-                            st_sec = st_raw.astype(np.float64) / s_rate
-                        else:
-                            st_sec = st_raw.astype(np.float64)
-
-                        target_uids = set()
-                        target_df = meta.tagged_df if not meta.tagged_df.empty else meta.df
-                        if "unit_id" in target_df.columns:
-                            for u in target_df["unit_id"].dropna().unique():
-                                try:
-                                    target_uids.add(int(u))
-                                except (ValueError, TypeError):
-                                    pass
-
-                        for uid in target_uids:
-                            mask = (sc_raw == uid)
-                            spks = st_sec[mask]
-                            if len(spks) > 1 and not np.all(spks[:-1] <= spks[1:]):
-                                spks = np.sort(spks)
-                            spikes_dict[uid] = spks
-
-                    if pulse_onsets is None or pulse_offsets is None:
-                        stim_reader = MatNpyStimulusReader()
-                        discovered = stim_reader.discover(meta.folder_path)
-                        if discovered:
-                            stim_proto = stim_reader.load(discovered[0])
-                            if pulse_onsets is None:
-                                pulse_onsets = np.asarray(stim_proto.onsets, dtype=np.float64)
-                            if pulse_offsets is None and getattr(stim_proto, "offsets", None) is not None:
-                                pulse_offsets = np.asarray(stim_proto.offsets, dtype=np.float64)
-
-                    if spikes_dict and pulse_onsets is not None:
-                        try:
-                            save_arrays_dir = meta.folder_path / f"{meta.session_id}_arrays"
-                            save_arrays_dir.mkdir(parents=True, exist_ok=True)
-                            save_npz_path = save_arrays_dir / f"{meta.session_id}_spikes.npz"
-                            spikes_export: Dict[str, Any] = {"pulse_onsets": pulse_onsets}
-                            if pulse_offsets is not None:
-                                spikes_export["pulse_offsets"] = pulse_offsets
-                            for uid_val, spk_arr in spikes_dict.items():
-                                spikes_export[f"unit_{uid_val}"] = spk_arr
-                            np.savez_compressed(save_npz_path, **spikes_export)
-                        except Exception:
-                            pass
-                except Exception:
-                    pass
 
             # Step 2: (40%) "Populating pooled units..."
             progress.setValue(40)
@@ -8903,43 +8397,45 @@ class ClusteringView(QWidget):
             self.loaded_experiments[meta.session_id] = meta
             if not self._feature_window_customized:
                 self.feature_config.time_window_ms = self._default_feature_time_window_ms()
-            self._invalidate_clustering_caches()
-            self._invalidate_probe_caches()
 
-            self._refresh_pooled_units_table()
-            self._refresh_experiments_table()
-            if hasattr(self, "marginal_widget"):
-                self.marginal_widget.update_distributions(self._get_active_pooled_dataframe())
+            if not _defer_refresh:
+                self._invalidate_clustering_caches()
+                self._invalidate_probe_caches()
 
-            # Step 3: (70%) "Computing embeddings & active learning..."
-            progress.setValue(70)
-            progress.setLabelText("Computing embeddings & active learning...")
-            QApplication.processEvents()
+                self._refresh_pooled_units_table()
+                self._refresh_experiments_table()
+                if hasattr(self, "marginal_widget"):
+                    self.marginal_widget.update_distributions(self._get_active_pooled_dataframe())
 
-            # Run or update clustering across newly pooled units
-            if self.table_pooled_units.rowCount() > 0:
-                if self._start_with_clusters:
-                    self.run_clustering(self.active_clustering_params)
-                else:
-                    self.reset_to_unassigned()
-
-                # Step 4: (90%) "Rendering preview..."
-                progress.setValue(90)
-                progress.setLabelText("Rendering preview...")
+                # Step 3: (70%) "Computing embeddings & active learning..."
+                progress.setValue(70)
+                progress.setLabelText("Computing embeddings & active learning...")
                 QApplication.processEvents()
 
-                self.table_pooled_units.blockSignals(True)
-                self.table_pooled_units.clearSelection()
-                self.table_pooled_units.selectRow(0)
-                self.table_pooled_units.blockSignals(False)
-                self._on_pooled_unit_selected()
+                # Run or update clustering across newly pooled units
+                if self.table_pooled_units.rowCount() > 0:
+                    if self._start_with_clusters:
+                        self.run_clustering(self.active_clustering_params)
+                    else:
+                        self.reset_to_unassigned()
+
+                    # Step 4: (90%) "Rendering preview..."
+                    progress.setValue(90)
+                    progress.setLabelText("Rendering preview...")
+                    QApplication.processEvents()
+
+                    self.table_pooled_units.blockSignals(True)
+                    self.table_pooled_units.clearSelection()
+                    self.table_pooled_units.selectRow(0)
+                    self.table_pooled_units.blockSignals(False)
+                    self._on_pooled_unit_selected()
+
+                self._set_dirty(True)
+                self.experiment_added.emit(meta.session_id)
 
             # Step 5: (100%) Close dialog
             progress.setValue(100)
             QApplication.processEvents()
-
-            self._set_dirty(True)
-            self.experiment_added.emit(meta.session_id)
             return True
         finally:
             progress.close()
@@ -8994,10 +8490,6 @@ class ClusteringView(QWidget):
                 k: v for k, v in self._unit_raster_psth_cache.items()
                 if not str(k[0]).startswith(session_id)
             }
-            self._unit_pixmap_cache = {
-                k: v for k, v in self._unit_pixmap_cache.items()
-                if not str(k[0]).startswith(session_id)
-            }
             self._member_pixmap_cache = {
                 k: v for k, v in self._member_pixmap_cache.items()
                 if not str(k[0]).startswith(session_id)
@@ -9016,6 +8508,9 @@ class ClusteringView(QWidget):
             self.marginal_widget.update_distributions(self._get_active_pooled_dataframe())
 
         if len(self.loaded_experiments) == 0:
+            self._invalidate_active_learning_worker()
+            self.ranked_candidates = []
+            self.active_candidate = None
             self.clear_cluster_comparison()
             self.image_viewer.clear_preview()
             self.lbl_candidate.setText("No Experiment Selected")
@@ -9047,6 +8542,7 @@ class ClusteringView(QWidget):
 
     def clear_all_experiments(self) -> None:
         """Clear all loaded experiments and reset Phase 2 pooled state."""
+        self._invalidate_active_learning_worker()
         self._invalidate_clustering_caches()
         self._invalidate_probe_caches()
         self.loaded_experiments.clear()
@@ -9184,8 +8680,8 @@ class ClusteringView(QWidget):
         mono_font = make_mono_font(FONT_SIZE_BODY)
 
         # Col 3: Lat (ms) (right-aligned, 1 dp, tabular)
-        lat_str = f"{float(lat):.1f}" if pd.notna(lat) and float(lat) < 500 else "N/A"
-        lat_key = float(lat) if pd.notna(lat) else 999.0
+        lat_str = f"{float(lat):.1f}" if pd.notna(lat) and is_valid_metric_value(lat) else "N/A"
+        lat_key = float(lat) if pd.notna(lat) else MISSING_METRIC_SENTINEL
         lat_item = NumericTableWidgetItem(lat_str, sort_key=lat_key)
         lat_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         lat_item.setFont(mono_font)
@@ -9601,6 +9097,34 @@ class ClusteringView(QWidget):
             ("02035_83R_20261021_u0010", "02035_83R_20261021", 10, 8.8, 0.55, 0.0380, True, 36, 300.0, 500.0),
             ("02035_83R_20261021_u0013", "02035_83R_20261021", 13, 3.2, 0.93, 0.0007, True, 52, 300.0, 750.0),
         ]
+
+        # Populate deterministic synthetic spikes and stimulus onsets BEFORE table selection & clustering
+        self._experiment_spikes.clear()
+        self._experiment_stimulus.clear()
+        self._unit_psth_cache.clear()
+        self._unit_raster_psth_cache.clear()
+        self._invalidate_clustering_caches()
+        rng = np.random.RandomState(42)
+        n_trials = 40
+        mock_onsets = np.arange(1.0, 1.0 + n_trials * 0.5, 0.5, dtype=np.float64)
+        for exp_id, _, _ in mock_exps:
+            self._experiment_stimulus[exp_id] = mock_onsets.copy()
+            self._experiment_spikes[exp_id] = {}
+
+        for _gid, sess_id, uid, lat_ms, rel, _salt, _tag, _ch, _depth, _px in mock_units:
+            jit_ms = 1.2
+            spikes_list: List[float] = []
+            for t_pulse in mock_onsets:
+                n_bg = int(rng.poisson(2))
+                if n_bg > 0:
+                    spikes_list.extend((t_pulse + rng.uniform(-0.1, 0.1, size=n_bg)).tolist())
+                if rng.rand() < rel:
+                    ev_offset_s = float(rng.normal(lat_ms / 1000.0, jit_ms / 1000.0))
+                    spikes_list.append(t_pulse + max(0.0005, ev_offset_s))
+            self._experiment_spikes.setdefault(sess_id, {})[int(uid)] = np.sort(
+                np.asarray(spikes_list, dtype=np.float64)
+            )
+
         self._set_pooled_table_rows(mock_units)
 
         if self._start_with_clusters:
@@ -9621,6 +9145,13 @@ class ClusteringView(QWidget):
             first_gid = self._pooled_rows[0].get("global_unit_id")
             self._update_probe_view_for_unit(first_gid)
 
+        self._undo_stack.clear()
+        self._redo_stack.clear()
+        if hasattr(self, "btn_undo"):
+            self.btn_undo.setEnabled(False)
+        if hasattr(self, "btn_redo"):
+            self.btn_redo.setEnabled(False)
+        self._set_dirty(False)
         self._schedule_background_plot_prewarm()
         self.experiments_changed.emit()
 

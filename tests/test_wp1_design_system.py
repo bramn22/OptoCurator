@@ -274,7 +274,7 @@ def test_wp1_cluster_color_service():
 # ---------------------------------------------------------------------------
 
 
-def test_wp1_cluster_color_consistency_across_all_clustering_views(qapp):
+def test_wp1_cluster_color_consistency_across_all_clustering_views(qapp, qtbot):
     """Verify one cluster has the exact same colour across every view in ClusteringView:
     1. Cluster card (swatch/header border & mean PSTH curve)
     2. Comparison pane (border & header title text colour)
@@ -285,6 +285,11 @@ def test_wp1_cluster_color_consistency_across_all_clustering_views(qapp):
     7. Pooled units table (using text_color_for_cluster on table text)
     """
     view = ClusteringView(start_with_clusters=True, load_mock=True)
+    qtbot.waitUntil(
+        lambda: view.active_candidate is not None
+        and (view._active_learning_worker is None or not view._active_learning_worker.isRunning()),
+        timeout=10000,
+    )
     assert view.current_clustering_result is not None
     active_cids = sorted(view.current_clustering_result.cluster_summaries.keys())
     assert len(active_cids) >= 2

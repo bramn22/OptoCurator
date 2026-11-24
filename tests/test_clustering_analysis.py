@@ -1,6 +1,5 @@
 """Unit and integration tests for Iteration 4: Phase 2 Clustering and Scatter Exploration."""
 
-import json
 from pathlib import Path
 import numpy as np
 import pandas as pd
@@ -8,7 +7,7 @@ import pyqtgraph as pg
 import pytest
 from PyQt6.QtCore import QEvent, QMimeData, Qt
 from PyQt6.QtGui import QKeyEvent
-from PyQt6.QtWidgets import QHeaderView, QLabel, QMessageBox, QSplitter, QTableWidgetItem
+from PyQt6.QtWidgets import QHeaderView, QLabel, QMessageBox, QSplitter
 
 from optocurator.analysis.clustering import (
     AffinityPropagationParameters,
@@ -33,15 +32,13 @@ from optocurator.io.phy import PhyKilosortReader, load_probe_and_unit_positions
 from optocurator.io.validation import validate_phase1_export
 from optocurator.ui.app import MainWindow
 from optocurator.ui.dialog_clustering import (
-    ClusteringDialog,
     EmbeddingSettingsDialog,
     HierarchicalClusteringDialog,
 )
 from optocurator.ui.dialog_clusters_customize import CustomizeClustersDialog, HotkeyLineEdit, normalize_hotkey
 from optocurator.ui.dialog_feature_settings import FeatureSettingsDialog, format_feature_summary
 from optocurator.ui.dialog_seed_clusters import SeedClustersDialog
-from optocurator.ui.image_viewer import ImageViewer, _format_unit_display
-from optocurator.ui.plots import UnitResponsePlot
+from optocurator.ui.plots import UnitResponsePlot, format_unit_display as _format_unit_display
 from optocurator.ui.splitters import ResettableSplitter
 from optocurator.ui.theme import (
     CLUSTER_CARD_SIZE,
@@ -400,13 +397,18 @@ def test_main_window_hierarchical_clustering_trigger(qapp):
     assert win.clustering_view.clusters_grid.count() == 4  # 3 cluster cards + '+ New cluster' card
 
 
-def test_iteration5_acceptance_hotkey_assignment_and_advance(qapp):
+def test_iteration5_acceptance_hotkey_assignment_and_advance(qapp, qtbot):
     """Iteration 5 Acceptance Test: 1-9 hotkey assignment, active learning advance, and drag-and-drop enhancements."""
     view = ClusteringView(start_with_clusters=True)
     assert view.current_clustering_result is not None
     assert len(view.current_clustering_result.cluster_summaries) == 4
 
-    # Verify active candidate exists initially
+    # Wait for initial active learning worker to surface active candidate
+    qtbot.waitUntil(
+        lambda: (view._active_learning_worker is None or not view._active_learning_worker.isRunning())
+        and view.active_candidate is not None,
+        timeout=10000,
+    )
     assert view.active_candidate is not None
     initial_cand_gid = view.active_candidate.global_unit_id
     active_cids = sorted(view.current_clustering_result.cluster_summaries.keys())
@@ -423,7 +425,12 @@ def test_iteration5_acceptance_hotkey_assignment_and_advance(qapp):
 
     # Unit should be assigned to first sorted active cluster
     assert view._pooled_units_map[initial_cand_gid]["cluster_id"] == target_cluster
-    # Candidate should have advanced to a new unit or completed
+    # Wait for active learning worker to finish and advance candidate
+    qtbot.waitUntil(
+        lambda: (view._active_learning_worker is None or not view._active_learning_worker.isRunning())
+        and (view.active_candidate is None or view.active_candidate.global_unit_id != initial_cand_gid),
+        timeout=10000,
+    )
     if view.active_candidate is not None:
         assert view.active_candidate.global_unit_id != initial_cand_gid
 
@@ -452,6 +459,7 @@ def test_iteration5_acceptance_hotkey_assignment_and_advance(qapp):
     move_event = MockDragMoveEvent(mime)
     card.dragMoveEvent(move_event)
     assert move_event.accepted is True
+    view.close()
 
 
 def test_clustering_view_dock_area_layout(qapp):
@@ -1162,10 +1170,15 @@ def test_reassign_last_cell_in_filtered_cluster_clears_selection(qapp):
     view.close()
 
 
-def test_hotkey_fallback_to_active_candidate_when_selection_cleared(qapp):
+def test_hotkey_fallback_to_active_candidate_when_selection_cleared(qapp, qtbot):
     """Verify that table_pooled_units.clearSelection() causes hotkey assignment to fall back to active_candidate."""
     view = ClusteringView(start_with_clusters=True, load_mock=True)
     assert view.current_clustering_result is not None
+    qtbot.waitUntil(
+        lambda: (view._active_learning_worker is None or not view._active_learning_worker.isRunning())
+        and view.active_candidate is not None,
+        timeout=10000,
+    )
     assert view.active_candidate is not None
 
     cand_gid = view.active_candidate.global_unit_id
@@ -1200,6 +1213,11 @@ def test_hotkey_fallback_to_active_candidate_when_selection_cleared(qapp):
     # Active candidate should be updated to target_cid
     assert view._pooled_units_map[active_cand_gid]["cluster_id"] == target_cid
 
+    qtbot.waitUntil(
+        lambda: (view._active_learning_worker is None or not view._active_learning_worker.isRunning())
+        and (view.active_candidate is None or view.active_candidate.global_unit_id != active_cand_gid),
+        timeout=10000,
+    )
     view.close()
 
 
@@ -1368,19 +1386,6 @@ def test_add_experiment_folder_progress_dialog_and_zero_cluster_loading(qapp, tm
     view.close()
 
 
-def test_generate_psth_matrix():
-    """Verify generate_psth_matrix standalone helper function with fallback Gaussian."""
-    from optocurator.analysis.clustering import generate_psth_matrix
-
-    df = _make_dummy_pooled_df(8)
-    psth_mat, t_bins = generate_psth_matrix(df, time_window_ms=(-30.0, 50.0), bin_size_ms=2.0)
-    assert psth_mat.shape == (8, 40)
-    assert len(t_bins) == 40
-    assert t_bins[0] == -29.0
-    assert t_bins[-1] == 49.0
-    assert not np.isnan(psth_mat).any()
-
-
 def test_generate_psth_matrix_with_real_spikes():
     """Verify generate_psth_matrix computes real PSTH when spike_data_map is provided."""
     from optocurator.analysis.clustering import generate_psth_matrix
@@ -1501,26 +1506,6 @@ def test_set_visualized_window_updates_cluster_card_psths_and_text_boxes(qapp):
     view.close()
 
 
-def test_mainwindow_menubar_window_delegation_to_clustering_view(qapp):
-    """Verify MainWindow Window menu actions delegate to ClusteringView when in Phase 2."""
-    win = MainWindow()
-    win.switch_to_clustering()
-    assert win.stack.currentIndex() == win.VIEW_CLUSTERING
-
-    # Trigger window action (-50.0, 50.0)
-    win._on_select_window((-50.0, 50.0))
-    assert win.clustering_view.current_window_ms == (-50.0, 50.0)
-    assert win.clustering_view.edit_win_start.text() == "-50"
-    assert win.clustering_view.edit_win_end.text() == "+50"
-
-    # Trigger window change from clustering_view -> updates MainWindow menubar action state
-    win.clustering_view.set_visualized_window((-30.0, 50.0))
-    if hasattr(win, "window_actions") and (-30.0, 50.0) in win.window_actions:
-        assert win.window_actions[(-30.0, 50.0)].isChecked()
-
-    win.close()
-
-
 def test_set_cluster_bin_size_updates_cluster_card_psths(qapp):
     """Verify default bin size is 2.0 ms, updating to 5.0 ms updates time_bins_ms resolution and cluster cards."""
     view = ClusteringView(start_with_clusters=True, load_mock=True)
@@ -1549,101 +1534,44 @@ def test_set_cluster_bin_size_updates_cluster_card_psths(qapp):
     view.close()
 
 
-def test_mainwindow_cluster_bin_size_menubar(qapp):
-    """Verify MainWindow Cluster PSTH Bin Size menubar presets update ClusteringView bin size."""
-    win = MainWindow()
-    win.switch_to_clustering()
-    assert win.stack.currentIndex() == win.VIEW_CLUSTERING
-
-    # Select 5.0 ms from menubar
-    win._on_select_cluster_bin_size(5.0)
-    assert win.clustering_view.current_bin_size_ms == 5.0
-    assert win.clustering_view.spin_bin_size.value() == 5.0
-    if hasattr(win, "cluster_bin_actions") and 5.0 in win.cluster_bin_actions:
-        assert win.cluster_bin_actions[5.0].isChecked()
-
-    # Changing spinbox in view syncs menubar checkmark
-    win.clustering_view.set_cluster_bin_size(1.0)
-    if hasattr(win, "cluster_bin_actions") and 1.0 in win.cluster_bin_actions:
-        assert win.cluster_bin_actions[1.0].isChecked()
-
-    win.close()
-
-
 def test_clustering_view_add_experiment_folder_loads_spikes_npz(tmp_path, qapp):
     """Verify add_experiment_folder loads <session_id>_spikes.npz into _experiment_spikes and stimulus."""
     session_id = "test_sess_01"
     session_dir = tmp_path / session_id
     session_dir.mkdir()
 
-    # Create dummy curation metadata and TSV
-    meta_dict = {
-        "export_timestamp": "2026-10-30T12:00:00",
-        "session_id": session_id,
-        "folder_path": str(session_dir),
-        "total_units": 2,
-        "opto_tagged_count": 2,
-        "negative_count": 0,
-        "questionable_count": 0,
-        "untagged_count": 0,
-        "feature_set_version": "1.0",
-        "units": [
-            {
-                "unit_id": 10,
-                "status": "Tagged",
-                "firing_rate_hz": 15.0,
-                "opto_latency_ms": 6.5,
-                "jitter_ms": 1.2,
-                "reliability": 0.95,
-                "peak_to_baseline_ratio": 4.5,
-                "waveform_correlation": 0.98,
-                "salzman_score": 0.88,
-                "contamination_rate": 0.01,
-            },
-            {
-                "unit_id": 20,
-                "status": "Tagged",
-                "firing_rate_hz": 25.0,
-                "opto_latency_ms": 12.0,
-                "jitter_ms": 2.1,
-                "reliability": 0.85,
-                "peak_to_baseline_ratio": 3.0,
-                "waveform_correlation": 0.92,
-                "salzman_score": 0.75,
-                "contamination_rate": 0.02,
-            },
-        ],
-    }
-    with open(session_dir / f"{session_id}_curated.json", "w", encoding="utf-8") as f:
-        json.dump(meta_dict, f)
-
+    # Create valid Phase 1 export CSV (<session_id>_opto_curated.csv)
     df_curated = pd.DataFrame([
         {
+            "global_unit_id": f"{session_id}_u10",
+            "session_id": session_id,
             "unit_id": 10,
-            "status": "Tagged",
-            "firing_rate_hz": 15.0,
-            "opto_latency_ms": 6.5,
+            "latency_ms": 6.5,
             "jitter_ms": 1.2,
             "reliability": 0.95,
-            "peak_to_baseline_ratio": 4.5,
             "waveform_correlation": 0.98,
-            "salzman_score": 0.88,
-            "contamination_rate": 0.01,
+            "salt_p_value": 0.001,
+            "is_tagged": True,
+            "cluster_id": -1,
+            "curated_label": "unassigned",
+            "plot_path": "",
         },
         {
+            "global_unit_id": f"{session_id}_u20",
+            "session_id": session_id,
             "unit_id": 20,
-            "status": "Tagged",
-            "firing_rate_hz": 25.0,
-            "opto_latency_ms": 12.0,
+            "latency_ms": 12.0,
             "jitter_ms": 2.1,
             "reliability": 0.85,
-            "peak_to_baseline_ratio": 3.0,
             "waveform_correlation": 0.92,
-            "salzman_score": 0.75,
-            "contamination_rate": 0.02,
+            "salt_p_value": 0.002,
+            "is_tagged": True,
+            "cluster_id": -1,
+            "curated_label": "unassigned",
+            "plot_path": "",
         },
     ])
-    df_curated.to_csv(session_dir / f"{session_id}_curated.tsv", sep="\t", index=False)
+    df_curated.to_csv(session_dir / f"{session_id}_opto_curated.csv", index=False)
 
     # Save real spike arrays and stimulus in <session_id>_spikes.npz
     spikes_u10 = np.array([1.005, 2.005, 3.005], dtype=np.float64)
@@ -1839,9 +1767,14 @@ def test_active_learning_toggle_on_off(qapp):
     view.close()
 
 
-def test_return_to_suggested_candidate_button(qapp):
+def test_return_to_suggested_candidate_button(qapp, qtbot):
     """Verify '🎯 Suggested Cell' button is enabled when looking at another unit and returns selection."""
     view = ClusteringView(start_with_clusters=True, load_mock=True)
+    qtbot.waitUntil(
+        lambda: (view._active_learning_worker is None or not view._active_learning_worker.isRunning())
+        and view.active_candidate is not None,
+        timeout=10000,
+    )
     assert view.active_candidate is not None
     top_cand_gid = view.active_candidate.global_unit_id
 
@@ -2030,9 +1963,15 @@ def test_format_unit_display_helper():
     assert u == "—"
 
 
-def test_phase2_ui_cleanups_clustering_view(qapp):
+def test_phase2_ui_cleanups_clustering_view(qapp, qtbot):
     """Integration test verifying all 5 UI cleanup deliverables in ClusteringView."""
     view = ClusteringView(start_with_clusters=True, load_mock=True)
+    qtbot.waitUntil(
+        lambda: (view._active_learning_worker is None or not view._active_learning_worker.isRunning())
+        and view.active_candidate is not None
+        and "Entropy: H=" in view.lbl_candidate.text(),
+        timeout=10000,
+    )
 
     # Deliverable 1: Unit/Session Info Formatting & Deduplication
     # Left image viewer title is hidden so it doesn't duplicate candidate header
@@ -2131,46 +2070,6 @@ def test_dynamic_array_export_and_validation(tmp_path, qapp):
     view.close()
 
 
-def test_image_viewer_live_plot_rendering(qapp):
-    """Verify ImageViewer renders live pyqtgraph plot without headings above subplots."""
-    viewer = ImageViewer()
-
-    psth_data = {
-        "raster_x": np.array([2.5, 3.1, 4.0, 10.2]),
-        "raster_y": np.array([0, 1, 1, 2]),
-        "n_trials": 10,
-        "psth_bins": np.linspace(-30.0, 50.0, 41),
-        "psth_rates": np.random.uniform(5.0, 20.0, 40),
-        "baseline_mean": 5.0,
-        "baseline_3sigma": 12.0,
-    }
-    meta = {"global_unit_id": "sess_01_u0005", "session_id": "sess_01", "unit_id": 5}
-
-    ok = viewer.set_live_plot(
-        psth_data=psth_data,
-        metadata=meta,
-        window_ms=(-30.0, 50.0),
-        order_by="presentation",
-        marker_size=3.0,
-    )
-    assert ok is True
-    assert viewer.plot_canvas.isVisible() is True
-    assert viewer.lbl_image.isHidden() is True
-    assert viewer._current_pixmap is not None
-
-    # No heading titles above subplots
-    assert viewer.raster_plot.titleLabel.text is None or viewer.raster_plot.titleLabel.text == ""
-    assert viewer.psth_plot.titleLabel.text is None or viewer.psth_plot.titleLabel.text == ""
-
-    # Clear preview resets to placeholder state
-    viewer.clear_preview()
-    assert viewer.plot_canvas.isHidden() is True
-    assert viewer.lbl_image.isVisible() is True
-    assert viewer._current_pixmap is None
-
-    viewer.close()
-
-
 def test_clustering_view_view_configuration_and_dynamic_inspection(qapp):
     """Verify ClusteringView dynamic array live rendering, pulse ordering, and marker size view config."""
     view = ClusteringView(start_with_clusters=True, load_mock=True)
@@ -2227,44 +2126,12 @@ def test_clustering_view_view_configuration_and_dynamic_inspection(qapp):
     view.close()
 
 
-def test_mainwindow_view_menu_delegation_to_phase2(qapp):
-    """Verify MainWindow View menu actions (ordering, marker size) delegate to ClusteringView in Phase 2."""
-    win = MainWindow()
-    win.switch_to_clustering()
-    assert win.stack.currentIndex() == win.VIEW_CLUSTERING
-
-    # Changing ordering in Phase 2 delegates to clustering_view
-    win._on_select_ordering("latency")
-    assert win.clustering_view.raster_order_by == "latency"
-    if hasattr(win, "act_order_lat"):
-        assert win.act_order_lat.isChecked()
-
-    # Changing marker size in Phase 2 delegates to clustering_view
-    win._on_select_marker_size(4.0)
-    assert win.clustering_view.raster_marker_size == 4.0
-
-    # Switching to Detection updates menu checkmarks to reflect DetectionView
-    win.switch_to_detection()
-    assert win.stack.currentIndex() == win.VIEW_DETECTION
-    if hasattr(win, "act_order_lat") and hasattr(win, "act_order_pres"):
-        assert win.act_order_pres.isChecked() == (win.detection_view.raster_order_by == "presentation")
-
-    win.close()
-
-
 def test_background_prewarm_and_compact_comparison_viewers(qapp):
-    """Verify background idle pre-warming, immediate pixmap caching upon assignment, and compact comparison cards."""
+    """Verify background idle pre-warming and compact comparison cards."""
     import time
     from PyQt6.QtCore import QThreadPool
 
     view = ClusteringView(start_with_clusters=True, load_mock=True)
-
-    # 0. Offscreen renderer initialization checks
-    view._ensure_offscreen_renderer()
-    assert view._offscreen_scene is not None
-    assert isinstance(view._offscreen_scene, pg.GraphicsScene)
-    assert view._offscreen_layout is not None
-    assert isinstance(view._offscreen_layout, pg.GraphicsLayout)
 
     # 1. Background pre-warming was triggered
     # Allow background QThreadPool worker and 10 ms QTimer prewarm slice to populate _member_pixmap_cache
@@ -2278,27 +2145,7 @@ def test_background_prewarm_and_compact_comparison_viewers(qapp):
     # Prewarm queue should have rendered member pixmap items
     assert len(view._member_pixmap_cache) > 0
 
-    # 2. Assign candidate to a cluster -> immediate caching in _unit_pixmap_cache
-    cand = view.active_candidate
-    if cand is not None:
-        cand_gid = cand.global_unit_id
-        # Assign to cluster 0
-        view.assign_candidate_to_cluster(0, unit_id=cand_gid)
-        # Check that pixmap is in cache
-        current_key = (
-            cand_gid,
-            view.current_window_ms,
-            view.current_bin_size_ms,
-            view.raster_order_by,
-            view.raster_marker_size,
-            view.psth_smooth,
-            view.psth_gaussian_sigma_ms,
-        )
-        assert current_key in view._unit_pixmap_cache
-        pixmap = view._unit_pixmap_cache[current_key]
-        assert not pixmap.isNull()
-
-    # 3. Open cluster comparison pane -> uses _MemberRowFrame with lazy UnitResponsePlot promotion
+    # 2. Open cluster comparison pane -> uses _MemberRowFrame with lazy UnitResponsePlot promotion
     view.set_cluster_comparison(0)
     assert len(view.comparison_viewers) > 0
     for comp_viewer in view.comparison_viewers:
@@ -2308,69 +2155,13 @@ def test_background_prewarm_and_compact_comparison_viewers(qapp):
         assert comp_viewer.unit_response_plot.raster_plot.getPlotItem()._raster_cache["scatter"].isVisible() is True
         assert comp_viewer.unit_response_plot.psth_plot.getPlotItem()._psth_cache["smooth_curve"].isVisible() is True
 
-    # 4. Changing view configuration invalidates / updates member pixmap cache
+    # 3. Changing view configuration invalidates / updates member pixmap cache
     view.set_visualized_window((-50.0, 70.0))
     qapp.processEvents()
 
     # New cache keys created for new window in _member_pixmap_cache
     new_keys = [k for k in view._member_pixmap_cache.keys() if k[1] == (-50.0, 70.0)]
     assert len(new_keys) > 0
-
-    view.clear_cluster_comparison()
-    view.close()
-
-
-def test_batch_accept_selected_candidates_atomic(qapp, monkeypatch):
-    """Verify batch candidate assignment via _on_accept_selected_candidates assigns candidate units atomically."""
-    view = ClusteringView(start_with_clusters=True, load_mock=True)
-    target_cid = 0
-    view.set_cluster_comparison(target_cid)
-
-    # Populate mock rows into table_suggested_candidates
-    gids = [f"mock_cand_{i}" for i in range(3)]
-    for g in gids:
-        view._pooled_units_map[g] = {
-            "global_unit_id": g,
-            "session_id": "mock_sess",
-            "unit_id": int(g.split("_")[-1]),
-            "cluster_id": -1,
-            "status": "Unassigned",
-            "curated_status": "Unassigned",
-        }
-        view._pooled_rows.append(view._pooled_units_map[g])
-        view._unit_status_map[g] = "Unassigned"
-
-    table = view.table_suggested_candidates
-    table.setRowCount(len(gids))
-    for r, g in enumerate(gids):
-        item = QTableWidgetItem(f"Unit {r}")
-        item.setData(Qt.ItemDataRole.UserRole, g)
-        item.setCheckState(Qt.CheckState.Checked)
-        table.setItem(r, 0, item)
-
-    # Spy on assign_candidate_to_cluster to verify single atomic batch call
-    calls = []
-    orig_assign = view.assign_candidate_to_cluster
-
-    def spy_assign(cid, unit_id=None):
-        calls.append((cid, unit_id))
-        return orig_assign(cid, unit_id=unit_id)
-
-    monkeypatch.setattr(view, "assign_candidate_to_cluster", spy_assign)
-
-    view._on_accept_selected_candidates()
-
-    # Must be called exactly once with the full list of GIDs (atomic batch)
-    assert len(calls) == 1
-    assert calls[0][0] == target_cid
-    assert calls[0][1] == gids
-
-    # All units must be Curated into target_cid
-    for g in gids:
-        assert view._pooled_units_map[g]["cluster_id"] == target_cid
-        assert view._unit_status_map[g] == "Curated"
-
-    view.close()
 
     view.clear_cluster_comparison()
     view.close()
@@ -2935,9 +2726,14 @@ def test_detection_view_export_probe_coordinates(tmp_path, qapp):
     det_view.close()
 
 
-def test_clustering_view_dynamic_probe_switching(qapp):
+def test_clustering_view_dynamic_probe_switching(qapp, qtbot):
     """Verify dynamic Silicon Probe view re-frames geometry and dots when switching sessions."""
     view = ClusteringView(start_with_clusters=True, load_mock=True)
+    qtbot.waitUntil(
+        lambda: (view._active_learning_worker is None or not view._active_learning_worker.isRunning())
+        and view.active_candidate is not None,
+        timeout=10000,
+    )
 
     # 1. Probe geometries registered
     assert "01942_74R_20261019" in view._experiment_probes
@@ -3106,9 +2902,14 @@ def test_clustering_view_add_experiment_folder_position_resolution(qapp, tmp_pat
     view.close()
 
 
-def test_clustering_view_probe_interactive_click_and_colors(qapp):
+def test_clustering_view_probe_interactive_click_and_colors(qapp, qtbot):
     """Verify clicking unit dots in Silicon Probe View selects unit and colors reflect clusters."""
     view = ClusteringView(start_with_clusters=True, load_mock=True)
+    qtbot.waitUntil(
+        lambda: (view._active_learning_worker is None or not view._active_learning_worker.isRunning())
+        and view.active_candidate is not None,
+        timeout=10000,
+    )
 
     # Unit dots are rendered on probe_units_scatter
     unit_spots = view.probe_units_scatter.points()
@@ -3412,4 +3213,45 @@ def test_area_normalized_psth_l1_and_pca_compression():
     feat_pca, _, _ = extract_feature_matrix(df_many, feature_config=cfg_pca_80)
     assert feat_full.shape == (16, 12)
     assert 1 <= feat_pca.shape[1] < feat_full.shape[1]
+
+
+def test_preserve_curated_keeps_cluster_cards_and_summaries_in_sync(qapp):
+    """preserve_curated=True must keep curated cluster cards and ClusteringResult summaries in sync (Bug CL3)."""
+    view = ClusteringView(load_mock=True, start_with_clusters=False)
+    try:
+        all_gids = list(view._pooled_units_map.keys())
+        curated_gids = all_gids[:2]
+        for gid in curated_gids:
+            view._pooled_units_map[gid]["cluster_id"] = 5
+            view._unit_status_map[gid] = "Curated"
+        view._cluster_card_order = [5]
+
+        ok = view.run_clustering(ClusteringParameters(n_clusters=2), preserve_curated=True)
+        assert ok is True
+        qapp.processEvents()
+
+        for gid in curated_gids:
+            assert view._pooled_units_map[gid]["cluster_id"] == 5
+            assert view._unit_status_map[gid] == "Curated"
+
+        assert 5 in view._cluster_cards
+        assert 5 in view.current_clustering_result.cluster_summaries
+        assert view._cluster_cards[5].count == 2
+        assert view.current_clustering_result.cluster_summaries[5].count == 2
+        total_in_summaries = sum(s.count for s in view.current_clustering_result.cluster_summaries.values())
+        assert total_in_summaries == len(view._pooled_units_map)
+
+        # Seeding with preserve_curated=True also keeps curated Cluster 5 card & forwards view smoothing/norm params
+        view.psth_smooth = False
+        view.cluster_psth_norm = "peak"
+        ok_seed = view.seed_clusters_with_affinity_propagation(AffinityPropagationParameters(preserve_curated=True))
+        assert ok_seed is True
+        qapp.processEvents()
+        assert 5 in view._cluster_cards
+        assert 5 in view.current_clustering_result.cluster_summaries
+        assert view.current_clustering_result.cluster_summaries[5].count == 2
+        assert view.current_clustering_result.parameters.psth_smooth is False
+        assert view.current_clustering_result.parameters.cluster_psth_norm == "peak"
+    finally:
+        view.close()
 

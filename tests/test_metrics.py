@@ -290,3 +290,57 @@ def test_psth_and_raster_custom_window():
     assert psth["baseline_mean"] > 0.0
 
 
+def test_decoupled_salt_window_and_per_unit_seeding():
+    """Verify SALT runs when salt_window has spikes despite narrow latency_window, and seeding depends only on unit_id (Bug M4)."""
+    from optocurator.models import StatsParameters
+
+    pulse_onsets = np.arange(1.0, 31.0, 1.0)
+    proto = StimulusProtocol(onsets=pulse_onsets, offsets=pulse_onsets + 0.02, name="test_proto")
+
+    # Unit fires at +8 ms (outside 0..5 ms latency window, inside 0..20 ms SALT window)
+    rng = np.random.default_rng(7)
+    bg_spikes = np.concatenate([pulse_onsets - 0.030, pulse_onsets - 0.012])
+    u_8ms = UnitData(
+        session_id="sess",
+        unit_id=17,
+        spike_times=np.sort(np.concatenate([bg_spikes, pulse_onsets + 0.008])),
+        sampling_rate=30000.0,
+    )
+    # Preceding noisy active unit with different unit_id=3
+    u_noise = UnitData(
+        session_id="sess",
+        unit_id=3,
+        spike_times=np.sort(np.concatenate([bg_spikes, pulse_onsets + rng.uniform(0.001, 0.019, len(pulse_onsets))])),
+        sampling_rate=30000.0,
+    )
+
+    params = StatsParameters(
+        latency_window_start_ms=0.0,
+        latency_window_end_ms=5.0,
+        reliability_window_start_ms=0.0,
+        reliability_window_end_ms=5.0,
+        salt_window_start_ms=0.0,
+        salt_window_end_ms=20.0,
+    )
+
+    m_single = compute_unit_metrics(u_8ms, proto, stats_params=params)
+    assert m_single.salt_p_value < 0.05
+
+    m_sess_only = compute_session_metrics([u_8ms], proto, stats_params=params, n_workers=1)
+    assert m_sess_only[0].salt_p_value == m_single.salt_p_value
+
+    # Preceding active unit must not shift per-unit SALT RNG seed or p-value
+    m_pair_a = compute_session_metrics([u_noise], proto, stats_params=StatsParameters(), n_workers=1)[0]
+    m_pair_b = compute_session_metrics([u_8ms], proto, stats_params=StatsParameters(salt_window_end_ms=20.0), n_workers=1)[0]
+    u_both_late = UnitData(
+        session_id="sess",
+        unit_id=17,
+        spike_times=np.sort(np.concatenate([bg_spikes, pulse_onsets + 0.004 + rng.normal(0, 0.004, len(pulse_onsets))])),
+        sampling_rate=30000.0,
+    )
+    m_alone = compute_unit_metrics(u_both_late, proto)
+    m_after = compute_session_metrics([u_noise, u_both_late], proto, n_workers=1)
+    assert m_after[1].salt_p_value == m_alone.salt_p_value
+    assert m_pair_a.salt_p_value >= 0.0 and m_pair_b.salt_p_value >= 0.0
+
+

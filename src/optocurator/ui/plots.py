@@ -6,8 +6,9 @@ import numpy as np
 import pyqtgraph as pg
 from PyQt6.QtCore import QRectF, QSize, Qt
 from PyQt6.QtGui import QTransform
-from PyQt6.QtWidgets import QSizePolicy, QVBoxLayout, QWidget
+from PyQt6.QtWidgets import QSizePolicy, QTableWidgetItem, QVBoxLayout, QWidget
 
+from optocurator.models import DEFAULT_PULSE_DURATION_MS
 from optocurator.ui.theme import (
     COLOR_ACCENT,
     COLOR_ACCENT_HOVER,
@@ -34,7 +35,22 @@ from optocurator.ui.theme import (
 )
 
 DEFAULT_Y_AXIS_WIDTH: int = 58
-DEFAULT_PULSE_DURATION_MS: float = 10.0
+
+
+class NumericTableWidgetItem(QTableWidgetItem):
+    """QTableWidgetItem supporting true numeric and custom sort keys."""
+
+    def __init__(self, text: str, sort_key: Any = None):
+        super().__init__(text)
+        self.sort_key = sort_key if sort_key is not None else text
+
+    def __lt__(self, other: "QTableWidgetItem") -> bool:
+        if isinstance(other, NumericTableWidgetItem):
+            try:
+                return self.sort_key < other.sort_key
+            except TypeError:
+                return str(self.sort_key) < str(other.sort_key)
+        return super().__lt__(other)
 
 
 def infer_pulse_duration_ms(

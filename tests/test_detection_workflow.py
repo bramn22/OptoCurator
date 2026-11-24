@@ -1,5 +1,6 @@
 """End-to-end integration and workflow tests for Phase 1 MVP Detection Workspace."""
 
+import os
 from pathlib import Path
 import numpy as np
 import pandas as pd
@@ -120,17 +121,6 @@ def test_detection_view_end_to_end_synthetic(qapp, tmp_path: Path):
     view._apply_thresholds()
     assert view.table_units.item(0, 7).text() == "✓"
 
-    # Test slider sync with spinbox on logarithmic scale:
-    # 500 ticks is halfway (10^-2 = 0.0100)
-    view.slider_salt.setValue(500)
-    assert abs(view.spin_salt.value() - 0.010) < 1e-4
-    # 750 ticks is 75% (10^-1 = 0.1000)
-    view.slider_salt.setValue(750)
-    assert abs(view.spin_salt.value() - 0.100) < 1e-4
-    # Setting spinbox to 0.050 moves slider to tick 675
-    view.spin_salt.setValue(0.050)
-    assert view.slider_salt.value() == 675
-
     # Test manual override toggle
     view.table_units.selectRow(2)  # Unit 2 is Untagged
     assert view.table_units.item(2, 7).text() == "○"
@@ -180,10 +170,13 @@ def test_detection_view_end_to_end_synthetic(qapp, tmp_path: Path):
 
 
 def test_detection_view_real_dataset_workflow(qapp, tmp_path: Path):
-    """Verify loading real experimental dataset if available on disk."""
-    real_path = Path("E:/OptotaggingCuration/test_OptoCurator/sorted_dir")
+    """Verify loading real experimental dataset if OPTOCURATOR_TEST_DATA_DIR is configured."""
+    data_dir = os.environ.get("OPTOCURATOR_TEST_DATA_DIR", "").strip()
+    if not data_dir:
+        pytest.skip("OPTOCURATOR_TEST_DATA_DIR not set.")
+    real_path = Path(data_dir)
     if not real_path.exists():
-        pytest.skip("Real test dataset not available on this machine.")
+        pytest.skip(f"OPTOCURATOR_TEST_DATA_DIR path does not exist: {real_path}")
 
     window = MainWindow()
     window.switch_to_detection()
@@ -295,20 +288,6 @@ def test_detection_view_visualization_options(qapp, tmp_path: Path):
     detection_view.combo_order.setCurrentIndex(0)
     assert detection_view.raster_order_by == "presentation"
 
-    # 6. Test MainWindow View menu integration
-    main_win.switch_to_launcher()
-    # Click [-10 ms, +30 ms] in menubar
-    main_win.window_actions[(-10.0, 30.0)].trigger()
-    assert detection_view.current_window_ms == (-10.0, 30.0)
-    assert detection_view.edit_win_start.text() == "-10"
-    assert main_win.stack.currentIndex() == MainWindow.VIEW_DETECTION
-
-    # Click Latency order in menubar
-    main_win.act_order_lat.trigger()
-    assert detection_view.raster_order_by == "latency"
-    assert main_win.act_order_lat.isChecked() is True
-    assert main_win.act_order_pres.isChecked() is False
-
 
 def test_detection_view_table_column_sorting(qapp, tmp_path: Path):
     """Verify ordering cells table based on column headers with toggling sort indicator triangle."""
@@ -380,64 +359,6 @@ def test_detection_view_table_column_sorting(qapp, tmp_path: Path):
     # Verify selecting a row after sorting renders the corresponding unit correctly
     view.table_units.selectRow(0)  # unit 3
     assert not view.raster_plot.getPlotItem().titleLabel.text
-
-
-def test_detection_view_logarithmic_salt_threshold(qapp):
-    """Verify that SALT threshold slider operates on a logarithmic scale from 1e-4 to 1.0."""
-    view = DetectionView()
-
-    # Default is 0.0500, which maps to tick 675 on the 0-1000 scale
-    assert abs(view.spin_salt.value() - 0.0500) < 1e-4
-    assert view.slider_salt.value() == 675
-
-    # 1. Test key logarithmic decades
-    # 10^-4 = 0.0001 -> tick 0
-    view.slider_salt.setValue(0)
-    assert abs(view.spin_salt.value() - 0.0001) < 1e-5
-
-    # 10^-3 = 0.001 -> tick 250
-    view.slider_salt.setValue(250)
-    assert abs(view.spin_salt.value() - 0.0010) < 1e-4
-
-    # 10^-2 = 0.010 -> tick 500
-    view.slider_salt.setValue(500)
-    assert abs(view.spin_salt.value() - 0.0100) < 1e-4
-
-    # 10^-1 = 0.100 -> tick 750
-    view.slider_salt.setValue(750)
-    assert abs(view.spin_salt.value() - 0.1000) < 1e-4
-
-    # 10^0 = 1.000 -> tick 1000
-    view.slider_salt.setValue(1000)
-    assert abs(view.spin_salt.value() - 1.0000) < 1e-4
-
-    # 2. Test high resolution switching between 0.01 and 0.1:
-    # There are exactly 250 ticks between 0.01 (tick 500) and 0.10 (tick 750)
-    view.slider_salt.setValue(500)
-    val_at_500 = view.spin_salt.value()
-    view.slider_salt.setValue(675)
-    val_at_675 = view.spin_salt.value()
-    view.slider_salt.setValue(750)
-    val_at_750 = view.spin_salt.value()
-
-    assert val_at_500 == 0.0100
-    assert val_at_675 == 0.0500
-    assert val_at_750 == 0.1000
-
-    # Intermediate ticks between 0.01 and 0.1 give smooth continuous p-values
-    view.slider_salt.setValue(600)
-    val_at_600 = view.spin_salt.value()
-    assert 0.0100 < val_at_600 < 0.0500
-
-    # 3. Test reverse sync: setting spinbox updates slider to exact log position
-    view.spin_salt.setValue(0.0100)
-    assert view.slider_salt.value() == 500
-
-    view.spin_salt.setValue(0.1000)
-    assert view.slider_salt.value() == 750
-
-    view.spin_salt.setValue(0.0010)
-    assert view.slider_salt.value() == 250
 
 
 def test_stats_menu_and_dialog_integration(qapp, monkeypatch):
@@ -657,10 +578,9 @@ def test_render_raster_vertical_lines(qapp):
     assert brush.color().name().lower() == COLOR_TEXT.lower()
 
 
-def test_raster_marker_size_configuration(qapp, monkeypatch, tmp_path: Path):
-    """Verify raster marker size customization in DetectionView and MainWindow menus."""
+def test_raster_marker_size_configuration(qapp, tmp_path: Path):
+    """Verify raster marker size customization in DetectionView."""
     import pyqtgraph as pg
-    from PyQt6.QtWidgets import QInputDialog
     from optocurator.ui.plots import render_raster
 
     # 1. Custom marker_size parameter in render_raster
@@ -686,7 +606,6 @@ def test_raster_marker_size_configuration(qapp, monkeypatch, tmp_path: Path):
     raw_plot_items = view.raster_plot.items if isinstance(view.raster_plot.items, list) else view.raster_plot.items()
     scatters = [it for it in raw_plot_items if isinstance(it, pg.ScatterPlotItem)]
     assert scatters[0].opts.get("size") == 3.0
-    assert window.raster_marker_actions[3.0].isChecked()
 
     # Change marker size via set_raster_marker_size
     view.set_raster_marker_size(5.0)
@@ -694,28 +613,6 @@ def test_raster_marker_size_configuration(qapp, monkeypatch, tmp_path: Path):
     raw_plot_items2 = view.raster_plot.items if isinstance(view.raster_plot.items, list) else view.raster_plot.items()
     scatters2 = [it for it in raw_plot_items2 if isinstance(it, pg.ScatterPlotItem)]
     assert scatters2[0].opts.get("size") == 5.0
-    assert window.raster_marker_actions[5.0].isChecked()
-    assert not window.raster_marker_actions[3.0].isChecked()
-
-    # Change marker size via MainWindow preset action
-    act_1px = window.raster_marker_actions[1.0]
-    act_1px.trigger()
-    assert view.raster_marker_size == 1.0
-    raw_plot_items3 = view.raster_plot.items if isinstance(view.raster_plot.items, list) else view.raster_plot.items()
-    scatters3 = [it for it in raw_plot_items3 if isinstance(it, pg.ScatterPlotItem)]
-    assert scatters3[0].opts.get("size") == 1.0
-    assert window.raster_marker_actions[1.0].isChecked()
-
-    # Custom marker size prompt via QInputDialog
-    monkeypatch.setattr(QInputDialog, "getDouble", lambda *args, **kwargs: (7.5, True))
-    window._on_custom_marker_size()
-    assert view.raster_marker_size == 7.5
-    raw_plot_items4 = view.raster_plot.items if isinstance(view.raster_plot.items, list) else view.raster_plot.items()
-    scatters4 = [it for it in raw_plot_items4 if isinstance(it, pg.ScatterPlotItem)]
-    assert scatters4[0].opts.get("size") == 7.5
-    # None of the preset actions should be checked when custom size 7.5 is active
-    for act in window.raster_marker_actions.values():
-        assert not act.isChecked()
 
 
 def test_raster_psth_y_axis_alignment(qapp, tmp_path: Path):

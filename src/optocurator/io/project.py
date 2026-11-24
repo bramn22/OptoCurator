@@ -88,28 +88,29 @@ def _to_serializable(val: Any) -> Any:
 
 def compute_portable_path(project_dir: Path, exp_dir: Path) -> str:
     """Return relative POSIX path if same drive/root, otherwise absolute POSIX string."""
-    proj = Path(project_dir).resolve()
-    exp = Path(exp_dir).resolve()
+    proj = Path(os.path.abspath(project_dir))
+    exp = Path(os.path.abspath(exp_dir))
     try:
         if proj.drive.lower() != exp.drive.lower():
-            return exp.as_posix()
+            return exp.resolve().as_posix()
         rel = os.path.relpath(exp, proj)
         return Path(rel).as_posix()
     except (ValueError, Exception):
-        return exp.as_posix()
+        return exp.resolve().as_posix()
 
 
 def resolve_experiment_path(project_dir: Path, path_str: str) -> Path:
     """Check relative to project_dir first, then absolute. If neither exists, raise MissingExperimentDirectoryError."""
+    norm_str = str(path_str).replace("\\", "/")
     proj = Path(project_dir).resolve()
 
     # Check relative to project_dir first
-    candidate_rel = (proj / path_str).resolve()
+    candidate_rel = (proj / norm_str).resolve()
     if candidate_rel.is_dir():
         return candidate_rel
 
     # Check as absolute path
-    candidate_abs = Path(path_str).resolve()
+    candidate_abs = Path(norm_str).resolve()
     if candidate_abs.is_dir():
         return candidate_abs
 
@@ -117,6 +118,47 @@ def resolve_experiment_path(project_dir: Path, path_str: str) -> Path:
         f"Experiment directory '{path_str}' could not be resolved relative to project directory "
         f"'{proj}' or as an absolute path."
     )
+
+
+_SCALAR_MODEL_PARAM_SPECS: Tuple[Tuple[str, Any, Any, Tuple[str, ...]], ...] = (
+    ("bin_size_ms", 2.0, float, ("view_params",)),
+    ("raster_order_by", "presentation", str, ("view_params",)),
+    ("raster_marker_size", 3.0, float, ("view_params",)),
+    ("auto_assign_threshold", 0.85, float, ("active_learning_params",)),
+    ("auto_assign_enabled", False, bool, ("active_learning_params",)),
+    ("active_learning_enabled", True, bool, ("active_learning_params",)),
+    ("al_n_estimators", 100, int, ()),
+    ("al_random_state", 42, int, ()),
+    ("al_max_distance_sigma", 3.5, float, ()),
+    ("overlay_focused_unit_enabled", True, bool, ()),
+    ("shared_y_axis_enabled", False, bool, ()),
+    ("cluster_sort_mode", "id", str, ()),
+)
+
+
+def _deserialize_dataclass(cls: Any, raw: Any, extra: Optional[Dict[str, Any]] = None) -> Any:
+    """Instantiate dataclass ``cls`` keeping only recognized fields from ``raw``."""
+    valid_fields = set(cls.__dataclass_fields__.keys())
+    filtered = {k: v for k, v in dict(raw or {}).items() if k in valid_fields}
+    if extra:
+        filtered.update(extra)
+    return cls(**filtered)
+
+
+def _lookup_scalar_param(
+    data: Dict[str, Any],
+    key: str,
+    default: Any,
+    fallback_sections: Tuple[str, ...] = (),
+) -> Any:
+    """Resolve scalar parameter from top-level ``data`` or legacy nested section dicts."""
+    if key in data:
+        return data[key]
+    for sec in fallback_sections:
+        nested = data.get(sec)
+        if isinstance(nested, dict) and key in nested:
+            return nested[key]
+    return default
 
 
 def serialize_model_parameters(
@@ -134,6 +176,12 @@ def serialize_model_parameters(
     psth_smooth: Optional[bool] = None,
     psth_gaussian_sigma_ms: Optional[float] = None,
     cluster_psth_norm: Optional[str] = None,
+    al_n_estimators: Optional[int] = None,
+    al_random_state: Optional[int] = None,
+    al_max_distance_sigma: Optional[float] = None,
+    overlay_focused_unit_enabled: Optional[bool] = None,
+    shared_y_axis_enabled: Optional[bool] = None,
+    cluster_sort_mode: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Serialize all model, view, and active learning parameters to a dictionary."""
     fc = feature_config or FeatureConfiguration()
@@ -142,104 +190,87 @@ def serialize_model_parameters(
     clust = clustering_params or ClusteringParameters(feature_config=fc)
 
     clust_dict = asdict(clust)
-    if "feature_config" in clust_dict:
-        clust_dict.pop("feature_config", None)
+    clust_dict.pop("feature_config", None)
 
-    smooth_val = bool(psth_smooth) if psth_smooth is not None else getattr(fc, "psth_smooth", True)
-    sigma_val = float(psth_gaussian_sigma_ms) if psth_gaussian_sigma_ms is not None else getattr(fc, "psth_gaussian_sigma_ms", 2.0)
-    norm_val = str(cluster_psth_norm) if cluster_psth_norm is not None else getattr(clust, "cluster_psth_norm", "probability")
-
-    return {
-        "feature_config": asdict(fc),
-        "embedding_params": asdict(emb),
-        "ap_params": asdict(ap),
-        "clustering_params": clust_dict,
-        "window_ms": list(window_ms) if window_ms is not None else [-30.0, 50.0],
-        "bin_size_ms": float(bin_size_ms) if bin_size_ms is not None else 2.0,
-        "raster_order_by": str(raster_order_by) if raster_order_by is not None else "presentation",
-        "raster_marker_size": float(raster_marker_size) if raster_marker_size is not None else 3.0,
-        "auto_assign_threshold": float(auto_assign_threshold) if auto_assign_threshold is not None else 0.85,
-        "auto_assign_enabled": bool(auto_assign_enabled) if auto_assign_enabled is not None else False,
-        "active_learning_enabled": bool(active_learning_enabled) if active_learning_enabled is not None else True,
-        "psth_smooth": smooth_val,
-        "psth_gaussian_sigma_ms": sigma_val,
-        "cluster_psth_norm": norm_val,
-    }
-
-
-def deserialize_model_parameters(data: Dict[str, Any]) -> Dict[str, Any]:
-    """Reconstruct all model, view, and active learning parameters from serialized dictionary."""
-    # 1. FeatureConfiguration
-    fc_dict = dict(data.get("feature_config", {}))
-    if "time_window_ms" in fc_dict and isinstance(fc_dict["time_window_ms"], (list, tuple)):
-        fc_dict["time_window_ms"] = tuple(float(x) for x in fc_dict["time_window_ms"])
-    if "psth_normalization" in fc_dict and str(fc_dict["psth_normalization"]).lower() in ("zscore_population", "baseline_zscore"):
-        fc_dict["psth_normalization"] = "area_normalized"
-    valid_fc_fields = set(FeatureConfiguration.__dataclass_fields__.keys())
-    filtered_fc = {k: v for k, v in fc_dict.items() if k in valid_fc_fields}
-    feature_config = FeatureConfiguration(**filtered_fc)
-
-    # 2. EmbeddingParameters
-    emb_dict = dict(data.get("embedding_params", {}))
-    valid_emb_fields = set(EmbeddingParameters.__dataclass_fields__.keys())
-    filtered_emb = {k: v for k, v in emb_dict.items() if k in valid_emb_fields}
-    embedding_params = EmbeddingParameters(**filtered_emb)
-
-    # 3. AffinityPropagationParameters
-    ap_dict = dict(data.get("ap_params", {}))
-    valid_ap_fields = set(AffinityPropagationParameters.__dataclass_fields__.keys())
-    filtered_ap = {k: v for k, v in ap_dict.items() if k in valid_ap_fields}
-    ap_params = AffinityPropagationParameters(**filtered_ap)
-
-    # 4. ClusteringParameters
-    clust_dict = dict(data.get("clustering_params", {}))
-    if "presented_window_ms" in clust_dict and isinstance(clust_dict["presented_window_ms"], (list, tuple)):
-        clust_dict["presented_window_ms"] = tuple(float(x) for x in clust_dict["presented_window_ms"])
-    valid_clust_fields = set(ClusteringParameters.__dataclass_fields__.keys())
-    filtered_clust = {k: v for k, v in clust_dict.items() if k in valid_clust_fields}
-    filtered_clust["feature_config"] = feature_config
-    clustering_params = ClusteringParameters(**filtered_clust)
-
-    # 5. View parameters
-    raw_win = data.get("window_ms", data.get("view_params", {}).get("window_ms", (-30.0, 50.0)))
-    if isinstance(raw_win, (list, tuple)):
-        window_ms = tuple(float(x) for x in raw_win)
-    else:
-        window_ms = (-30.0, 50.0)
-
-    bin_size_ms = float(data.get("bin_size_ms", data.get("view_params", {}).get("bin_size_ms", 2.0)))
-    raster_order_by = str(data.get("raster_order_by", data.get("view_params", {}).get("raster_order_by", "presentation")))
-    raster_marker_size = float(data.get("raster_marker_size", data.get("view_params", {}).get("raster_marker_size", 3.0)))
-
-    # 6. Active learning parameters
-    auto_assign_threshold = float(data.get("auto_assign_threshold", data.get("active_learning_params", {}).get("auto_assign_threshold", 0.85)))
-    auto_assign_enabled = bool(data.get("auto_assign_enabled", data.get("active_learning_params", {}).get("auto_assign_enabled", False)))
-    active_learning_enabled = bool(data.get("active_learning_enabled", data.get("active_learning_params", {}).get("active_learning_enabled", True)))
-
-    # 7. Smoothing parameters
-    psth_smooth = bool(data.get("psth_smooth", getattr(feature_config, "psth_smooth", True)))
-    psth_gaussian_sigma_ms = float(data.get("psth_gaussian_sigma_ms", getattr(feature_config, "psth_gaussian_sigma_ms", 2.0)))
-
-    # 8. Normalization parameters
-    cluster_psth_norm = str(data.get("cluster_psth_norm", getattr(clustering_params, "cluster_psth_norm", "probability")))
-    clustering_params.cluster_psth_norm = cluster_psth_norm
-
-    return {
-        "feature_config": feature_config,
-        "embedding_params": embedding_params,
-        "ap_params": ap_params,
-        "clustering_params": clustering_params,
-        "window_ms": window_ms,
+    provided_scalars = {
         "bin_size_ms": bin_size_ms,
         "raster_order_by": raster_order_by,
         "raster_marker_size": raster_marker_size,
         "auto_assign_threshold": auto_assign_threshold,
         "auto_assign_enabled": auto_assign_enabled,
         "active_learning_enabled": active_learning_enabled,
+        "al_n_estimators": al_n_estimators,
+        "al_random_state": al_random_state,
+        "al_max_distance_sigma": al_max_distance_sigma,
+        "overlay_focused_unit_enabled": overlay_focused_unit_enabled,
+        "shared_y_axis_enabled": shared_y_axis_enabled,
+        "cluster_sort_mode": cluster_sort_mode,
+    }
+    out: Dict[str, Any] = {
+        "feature_config": asdict(fc),
+        "embedding_params": asdict(emb),
+        "ap_params": asdict(ap),
+        "clustering_params": clust_dict,
+        "window_ms": [float(x) for x in window_ms] if window_ms is not None else [-30.0, 50.0],
+    }
+    for key, default, converter, _ in _SCALAR_MODEL_PARAM_SPECS:
+        val = provided_scalars.get(key)
+        out[key] = converter(val if val is not None else default)
+
+    out["psth_smooth"] = bool(psth_smooth) if psth_smooth is not None else bool(getattr(fc, "psth_smooth", True))
+    out["psth_gaussian_sigma_ms"] = (
+        float(psth_gaussian_sigma_ms)
+        if psth_gaussian_sigma_ms is not None
+        else float(getattr(fc, "psth_gaussian_sigma_ms", 2.0))
+    )
+    out["cluster_psth_norm"] = (
+        str(cluster_psth_norm)
+        if cluster_psth_norm is not None
+        else str(getattr(clust, "cluster_psth_norm", "probability"))
+    )
+    return out
+
+
+def deserialize_model_parameters(data: Dict[str, Any]) -> Dict[str, Any]:
+    """Reconstruct all model, view, and active learning parameters from serialized dictionary."""
+    fc_dict = dict(data.get("feature_config", {}))
+    if isinstance(fc_dict.get("time_window_ms"), (list, tuple)):
+        fc_dict["time_window_ms"] = tuple(float(x) for x in fc_dict["time_window_ms"])
+    if str(fc_dict.get("psth_normalization", "")).lower() in ("zscore_population", "baseline_zscore"):
+        fc_dict["psth_normalization"] = "area_normalized"
+    feature_config = _deserialize_dataclass(FeatureConfiguration, fc_dict)
+
+    embedding_params = _deserialize_dataclass(EmbeddingParameters, data.get("embedding_params"))
+    ap_params = _deserialize_dataclass(AffinityPropagationParameters, data.get("ap_params"))
+
+    clust_dict = dict(data.get("clustering_params", {}))
+    if isinstance(clust_dict.get("presented_window_ms"), (list, tuple)):
+        clust_dict["presented_window_ms"] = tuple(float(x) for x in clust_dict["presented_window_ms"])
+    clustering_params = _deserialize_dataclass(ClusteringParameters, clust_dict, extra={"feature_config": feature_config})
+
+    raw_win = _lookup_scalar_param(data, "window_ms", (-30.0, 50.0), ("view_params",))
+    window_ms = tuple(float(x) for x in raw_win) if isinstance(raw_win, (list, tuple)) else (-30.0, 50.0)
+
+    psth_smooth = bool(data.get("psth_smooth", getattr(feature_config, "psth_smooth", True)))
+    psth_gaussian_sigma_ms = float(
+        data.get("psth_gaussian_sigma_ms", getattr(feature_config, "psth_gaussian_sigma_ms", 2.0))
+    )
+    cluster_psth_norm = str(data.get("cluster_psth_norm", getattr(clustering_params, "cluster_psth_norm", "probability")))
+    clustering_params.cluster_psth_norm = cluster_psth_norm
+
+    result: Dict[str, Any] = {
+        "feature_config": feature_config,
+        "embedding_params": embedding_params,
+        "ap_params": ap_params,
+        "clustering_params": clustering_params,
+        "window_ms": window_ms,
         "psth_smooth": psth_smooth,
         "psth_gaussian_sigma_ms": psth_gaussian_sigma_ms,
         "cluster_psth_norm": cluster_psth_norm,
     }
+    for key, default, converter, fallback_secs in _SCALAR_MODEL_PARAM_SPECS:
+        result[key] = converter(_lookup_scalar_param(data, key, default, fallback_secs))
+    return result
 
 
 def save_clustering_project(
@@ -266,29 +297,14 @@ def save_clustering_project(
         "created_at": data.created_at or datetime.now(timezone.utc).isoformat(),
         "updated_at": datetime.now(timezone.utc).isoformat(),
         "experiments": [
-            {
-                "session_id": exp.session_id,
-                "path": exp.path,
-                "protocol_name": exp.protocol_name,
-                "total_units": exp.total_units,
-                "tagged_units": exp.tagged_units,
-            }
-            if isinstance(exp, ExperimentRef) else exp
+            asdict(exp) if isinstance(exp, ExperimentRef) else exp
             for exp in data.experiments
         ],
         "model_parameters": data.model_parameters,
         "clusters": data.clusters,
         "active_learning_state": data.active_learning_state,
         "unit_assignments": [
-            {
-                "global_unit_id": u.global_unit_id,
-                "session_id": u.session_id,
-                "unit_id": u.unit_id,
-                "cluster_id": u.cluster_id,
-                "curated_status": u.curated_status,
-                "auto_confidence": u.auto_confidence,
-            }
-            if isinstance(u, UnitAssignmentRecord) else u
+            asdict(u) if isinstance(u, UnitAssignmentRecord) else u
             for u in data.unit_assignments
         ],
     }

@@ -1,5 +1,6 @@
 """Tests for NWB file inspection, spike/stimulus reading, and DetectionView integration."""
 
+import os
 from pathlib import Path
 import h5py
 import numpy as np
@@ -133,11 +134,14 @@ def test_detection_view_load_nwb_and_menu_action(qapp, tmp_path: Path):
 
 
 def test_real_openscope_nwb_smoke(qapp):
-    """Smoke-test real OpenScope Psycode NWB file if present in E:\\OptotaggingCuration\\nwb."""
-    nwb_dir = Path(r"E:\OptotaggingCuration\nwb")
+    """Smoke-test real OpenScope Psycode NWB file if OPTOCURATOR_TEST_NWB_DIR is configured."""
+    env_nwb = os.environ.get("OPTOCURATOR_TEST_NWB_DIR", "").strip()
+    if not env_nwb:
+        pytest.skip("OPTOCURATOR_TEST_NWB_DIR not set.")
+    nwb_dir = Path(env_nwb)
     files = sorted(nwb_dir.glob("*.nwb")) if nwb_dir.is_dir() else []
     if not files:
-        pytest.skip("Real NWB files not present in E:\\OptotaggingCuration\\nwb")
+        pytest.skip(f"No .nwb files found in OPTOCURATOR_TEST_NWB_DIR: {nwb_dir}")
 
     summary = inspect_nwb(files[0])
     assert summary.n_total_units > 0
@@ -155,5 +159,32 @@ def test_real_openscope_nwb_smoke(qapp):
     assert ok is True
     assert len(det.units) > 0
     assert det._channel_positions is not None and len(det._channel_positions) > 0
+    det.close()
+
+
+def test_nwb_export_persists_channel_positions_for_clustering(qapp, tmp_path: Path):
+    """Exporting a loaded NWB session must persist _channel_positions into <session_id>_spikes.npz (Bug IO6)."""
+    from optocurator.ui.view_clusters import ClusteringView
+
+    nwb_file = _create_synthetic_nwb(tmp_path / "synthetic_probe_export.nwb")
+    det = DetectionView()
+    assert det.load_nwb_file(nwb_file, probe_name="ProbeA", qc_only=False, expand_pulse_trains=True) is True
+    expected_pos = np.asarray(det._channel_positions, dtype=np.float64)
+    assert expected_pos.shape == (4, 2)
+
+    export_dir = tmp_path / "nwb_export"
+    csv_path = det.export_curated_session(export_dir, show_dialog=False, precompute_pngs=False)
+    assert csv_path is not None and csv_path.is_file()
+
+    npz_path = export_dir / f"{det.session_id}_arrays" / f"{det.session_id}_spikes.npz"
+    assert npz_path.is_file()
+    with np.load(npz_path, allow_pickle=True) as npz_data:
+        assert "channel_positions" in npz_data.files
+        np.testing.assert_allclose(npz_data["channel_positions"], expected_pos)
+
+    cview = ClusteringView()
+    assert cview.add_experiment_folder(export_dir) is True
+    np.testing.assert_allclose(cview._experiment_probes[det.session_id], expected_pos)
+    cview.close()
     det.close()
 

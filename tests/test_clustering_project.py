@@ -129,6 +129,32 @@ def test_portable_and_resolved_paths(tmp_path: Path):
     assert "could not be resolved" in str(exc_info.value)
 
 
+def test_portable_path_preserves_symlinks_and_resolves_backslashes(tmp_path: Path):
+    """compute_portable_path must preserve symlink/junction relative paths and resolve_experiment_path handles backslashes (Bug IO8)."""
+    import os
+
+    proj_dir = tmp_path / "workspace" / "project_01"
+    proj_dir.mkdir(parents=True, exist_ok=True)
+    target_dir = tmp_path / "external_drive" / "session_target"
+    target_dir.mkdir(parents=True, exist_ok=True)
+    linked_dir = proj_dir / "linked_session"
+
+    try:
+        os.symlink(target_dir, linked_dir, target_is_directory=True)
+    except OSError:
+        if os.name == "nt":
+            import _winapi
+
+            _winapi.CreateJunction(str(target_dir), str(linked_dir))
+        else:
+            pytest.skip("Symlinks not supported in this environment")
+
+    portable = compute_portable_path(proj_dir, linked_dir)
+    assert portable == "linked_session"
+    assert resolve_experiment_path(proj_dir, portable) == target_dir.resolve()
+    assert resolve_experiment_path(proj_dir, "..\\..\\external_drive\\session_target") == target_dir.resolve()
+
+
 def test_model_parameters_serialization_roundtrip():
     """Verify serialization and deserialization of all model, view, and active learning parameters."""
     fc = FeatureConfiguration(
@@ -593,4 +619,174 @@ def test_legacy_project_loading_ignores_removed_fields_and_maps_norm(tmp_path: P
         restored_loaded = deserialize_model_parameters(loaded.model_parameters)
         assert restored_loaded["feature_config"].psth_normalization == "area_normalized"
         assert restored_loaded["clustering_params"].n_clusters == 4
+
+
+def test_project_roundtrip_persists_al_hyperparams_view_options_and_defers_refresh(qapp, tmp_path: Path, monkeypatch):
+    """Project save/load must round-trip AL params, view options, combo_embedding_method, and defer batch refresh (Bug IO5)."""
+    s1 = _build_test_phase1_export(tmp_path / "data", "sess_io5_1", n_units=4, n_tagged=2)
+    s2 = _build_test_phase1_export(tmp_path / "data", "sess_io5_2", n_units=4, n_tagged=2)
+    proj_dir = tmp_path / "proj_io5"
+
+    view = ClusteringView()
+    assert view.add_experiment_folder(s1) is True
+    assert view.add_experiment_folder(s2) is True
+
+    view.al_n_estimators = 250
+    view.al_random_state = 99
+    view.al_max_distance_sigma = 1.5
+    view.overlay_focused_unit_enabled = False
+    view.shared_y_axis_enabled = True
+    view._cluster_sort_mode = "size"
+    view.embedding_params.method = "UMAP"
+
+    saved_yaml = view.save_project(proj_dir)
+    assert saved_yaml is not None and saved_yaml.is_file()
+    view.close()
+
+    reopened = ClusteringView()
+    reset_calls = 0
+    orig_reset = reopened.reset_to_unassigned
+
+    def counted_reset(*args, **kwargs):
+        nonlocal reset_calls
+        reset_calls += 1
+        return orig_reset(*args, **kwargs)
+
+    monkeypatch.setattr(reopened, "reset_to_unassigned", counted_reset)
+    assert reopened.load_project(proj_dir) is True
+
+    # Deferred refresh: only clear_all_experiments calls reset_to_unassigned (1); add_experiment_folder loop calls 0
+    assert reset_calls == 1
+
+    assert reopened.al_n_estimators == 250
+    assert reopened.al_random_state == 99
+    assert reopened.al_max_distance_sigma == pytest.approx(1.5)
+    assert reopened.overlay_focused_unit_enabled is False
+    assert reopened.act_overlay_focused_unit.isChecked() is False
+    assert reopened.shared_y_axis_enabled is True
+    assert reopened.act_shared_y_axis.isChecked() is True
+    assert reopened._cluster_sort_mode == "size"
+    assert reopened._sort_actions["size"].isChecked() is True
+    assert reopened.embedding_params.method == "UMAP"
+    assert reopened.combo_embedding_method.currentData() == "UMAP"
+    reopened.close()
+
+
+def test_optoclustering_project2_roundtrip_preserves_all_fields(qapp, tmp_path):
+    """Copy of OptoClusteringProject2 opens with identical state and re-saving loses no field."""
+    import shutil
+    import subprocess
+    import sys
+
+    src_project = Path(__file__).resolve().parents[1] / "data" / "OptoClusteringProject2"
+    src_yaml_path = src_project / "clustering_project.yaml"
+    if not src_yaml_path.is_file():
+        pytest.skip("data/OptoClusteringProject2 not available")
+
+    orig_yaml = yaml.safe_load(src_yaml_path.read_text(encoding="utf-8"))
+
+    tmp_project = tmp_path / "OptoClusteringProject2"
+    shutil.copytree(src_project, tmp_project)
+
+    created_links: List[Path] = []
+    view: Optional[ClusteringView] = None
+    reopened: Optional[ClusteringView] = None
+    try:
+        for exp in orig_yaml.get("experiments", []):
+            rel_str = exp["path"]
+            real_exp = (src_project / rel_str).resolve()
+            if not real_exp.is_dir():
+                pytest.skip(f"Referenced session folder missing: {real_exp}")
+            link_path = (tmp_project / rel_str).resolve()
+            if not link_path.exists():
+                link_path.parent.mkdir(parents=True, exist_ok=True)
+                if sys.platform == "win32":
+                    subprocess.run(
+                        ["cmd", "/c", "mklink", "/J", str(link_path), str(real_exp)],
+                        check=True,
+                        capture_output=True,
+                    )
+                else:
+                    link_path.symlink_to(real_exp, target_is_directory=True)
+                created_links.append(link_path)
+
+        view = ClusteringView()
+        assert view.load_project(tmp_project) is True
+
+        orig_clusters = orig_yaml["clusters"]
+        orig_names = {int(k): v for k, v in (orig_clusters.get("names") or {}).items()}
+        orig_colors = {int(k): v for k, v in (orig_clusters.get("colors") or {}).items()}
+        orig_hotkeys = {int(k): v for k, v in (orig_clusters.get("hotkeys") or {}).items()}
+        assert {int(k): v for k, v in view._cluster_names.items() if v} == orig_names
+        for cid, hex_color in orig_colors.items():
+            assert view._cluster_colors[cid] == hex_color
+        assert {int(k): v for k, v in view._cluster_hotkeys.items() if v} == orig_hotkeys
+        assert [int(x) for x in view._cluster_card_order] == [int(x) for x in orig_clusters["card_order"]]
+
+        expected_units = {
+            rec["global_unit_id"]: (int(rec["cluster_id"]), str(rec["curated_status"]))
+            for rec in orig_yaml["unit_assignments"]
+        }
+        assert len(view._pooled_units_map) == len(expected_units)
+        for gid, (exp_cid, exp_status) in expected_units.items():
+            assert int(view._pooled_units_map[gid]["cluster_id"]) == exp_cid
+            assert str(view._unit_status_map.get(gid, "Unassigned")) == exp_status
+
+        orig_mp = orig_yaml["model_parameters"]
+        assert view.embedding_params.method == orig_mp["embedding_params"]["method"]
+        assert view.active_clustering_params.algorithm == orig_mp["clustering_params"]["algorithm"]
+        assert view.active_clustering_params.n_clusters == orig_mp["clustering_params"]["n_clusters"]
+        assert view.auto_assign_threshold == pytest.approx(orig_mp["auto_assign_threshold"])
+        assert view.auto_assign_enabled is orig_mp["auto_assign_enabled"]
+        assert view.active_learning_enabled is orig_mp["active_learning_enabled"]
+        assert list(view.current_window_ms) == [float(x) for x in orig_mp["window_ms"]]
+        assert view.current_bin_size_ms == pytest.approx(orig_mp["bin_size_ms"])
+
+        saved_path = view.save_project(tmp_project)
+        assert saved_path is not None and saved_path.is_file()
+        saved_yaml = yaml.safe_load(saved_path.read_text(encoding="utf-8"))
+
+        # Every original top-level section and nested key/value must survive re-save
+        assert [e["session_id"] for e in saved_yaml["experiments"]] == [
+            e["session_id"] for e in orig_yaml["experiments"]
+        ]
+        for section_key, orig_section in orig_mp.items():
+            if isinstance(orig_section, dict):
+                for sub_key, orig_val in orig_section.items():
+                    assert saved_yaml["model_parameters"][section_key][sub_key] == orig_val
+            else:
+                assert saved_yaml["model_parameters"][section_key] == orig_section
+
+        assert saved_yaml["clusters"]["names"] == orig_clusters["names"]
+        for cid, hex_color in orig_colors.items():
+            assert saved_yaml["clusters"]["colors"][cid] == hex_color
+        assert saved_yaml["clusters"]["hotkeys"] == orig_clusters["hotkeys"]
+        assert saved_yaml["clusters"]["card_order"] == orig_clusters["card_order"]
+        assert saved_yaml["active_learning_state"] == orig_yaml["active_learning_state"]
+
+        saved_units = {
+            rec["global_unit_id"]: (int(rec["cluster_id"]), str(rec["curated_status"]))
+            for rec in saved_yaml["unit_assignments"]
+        }
+        assert saved_units == expected_units
+
+        reopened = ClusteringView()
+        assert reopened.load_project(tmp_project) is True
+        assert [int(x) for x in reopened._cluster_card_order] == [int(x) for x in orig_clusters["card_order"]]
+        assert {
+            gid: (int(row["cluster_id"]), str(reopened._unit_status_map.get(gid, "Unassigned")))
+            for gid, row in reopened._pooled_units_map.items()
+        } == expected_units
+    finally:
+        if reopened is not None:
+            reopened.close()
+        if view is not None:
+            view.close()
+        for link_path in created_links:
+            if link_path.exists():
+                if sys.platform == "win32":
+                    subprocess.run(["cmd", "/c", "rmdir", str(link_path)], check=False, capture_output=True)
+                else:
+                    link_path.unlink(missing_ok=True)
+
 

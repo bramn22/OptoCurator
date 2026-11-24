@@ -31,17 +31,26 @@ def _plain_html(html: str) -> str:
     return doc.toPlainText().strip()
 
 
-def test_wp5_focused_unit_header_and_return_to_suggested_button(qapp):
+def test_wp5_focused_unit_header_and_return_to_suggested_button(qapp, qtbot):
     """Header has 64px height, title/session labels, and '↩ Suggested unit' button + G shortcut."""
     view = _make_view()
     view.show()
     qapp.processEvents()
+    qtbot.waitUntil(
+        lambda: view.active_candidate is not None
+        and (view._active_learning_worker is None or not view._active_learning_worker.isRunning()),
+        timeout=10000,
+    )
 
     assert view.focused_unit_header.height() == FOCUSED_UNIT_HEADER_HEIGHT == 64
 
     # Ensure active learning is on and we have an active candidate + another unit
     view.set_active_learning_mode(True)
-    qapp.processEvents()
+    qtbot.waitUntil(
+        lambda: view.active_candidate is not None
+        and (view._active_learning_worker is None or not view._active_learning_worker.isRunning()),
+        timeout=10000,
+    )
     assert view.active_candidate is not None
     cand_gid = view.active_candidate.global_unit_id
 
@@ -162,11 +171,16 @@ def test_wp5_cluster_probability_bar_chart_widget(qapp):
     bar_widget.close()
 
 
-def test_wp5_cluster_probability_bar_click_opens_inspector_in_view(qapp):
+def test_wp5_cluster_probability_bar_click_opens_inspector_in_view(qapp, qtbot):
     """Clicking a probability bar in ClusteringView opens that cluster in the inspector and outlines the bar."""
     view = _make_view()
     view.show()
     qapp.processEvents()
+    qtbot.waitUntil(
+        lambda: len(view.cluster_prob_bar._bar_cids) > 0
+        and (view._active_learning_worker is None or not view._active_learning_worker.isRunning()),
+        timeout=10000,
+    )
 
     assert len(view.cluster_prob_bar._bar_cids) > 0
     target_idx = 0
@@ -266,11 +280,23 @@ def test_wp5_response_metrics_kde_grid_legend_lines_overlays_and_values(qapp):
     widget.close()
 
 
-def test_wp5_action_row_undo_redo_and_unassign(qapp):
+def test_wp5_action_row_undo_redo_and_unassign(qapp, qtbot):
     """Action row has Undo/Skip/Unassign (Save hidden), Unassign visibility tracks cluster_id>=0, Undo/Redo & Backspace work."""
     view = _make_view()
     view.show()
     qapp.processEvents()
+    qtbot.waitUntil(
+        lambda: (view._active_learning_worker is None or not view._active_learning_worker.isRunning())
+        and view.active_candidate is not None,
+        timeout=10000,
+    )
+
+    def _wait_worker_idle() -> None:
+        qtbot.waitUntil(
+            lambda: view._active_learning_worker is None or view._active_learning_worker.isFinished(),
+            timeout=10000,
+        )
+        qapp.processEvents()
 
     assert hasattr(view, "btn_undo") and not view.btn_undo.isHidden()
     assert hasattr(view, "btn_skip_candidate") and not view.btn_skip_candidate.isHidden()
@@ -288,7 +314,7 @@ def test_wp5_action_row_undo_redo_and_unassign(qapp):
 
     # Unassign it via unassign_focused_unit() -> cluster_id becomes -1 and btn_unassign hides
     assert view.unassign_focused_unit()
-    qapp.processEvents()
+    _wait_worker_idle()
     assert view._pooled_units_map[test_gid]["cluster_id"] == -1
     assert view._unit_status_map[test_gid] == "Unassigned"
     assert view.btn_unassign.isHidden()
@@ -296,7 +322,7 @@ def test_wp5_action_row_undo_redo_and_unassign(qapp):
     # Assign to an existing cluster
     target_cid = next(iter(view._cluster_cards.keys()))
     assert view.assign_candidate_to_cluster(target_cid, unit_id=test_gid)
-    qapp.processEvents()
+    _wait_worker_idle()
 
     assert view._pooled_units_map[test_gid]["cluster_id"] == target_cid
     assert view._unit_status_map[test_gid] == "Curated"
@@ -310,7 +336,7 @@ def test_wp5_action_row_undo_redo_and_unassign(qapp):
 
     # Undo restores unassigned state AND previous focused unit
     assert view.undo()
-    qapp.processEvents()
+    _wait_worker_idle()
     assert view._pooled_units_map[test_gid]["cluster_id"] == -1
     assert view._unit_status_map[test_gid] == "Unassigned"
     assert view._current_selected_gid == test_gid
@@ -318,17 +344,23 @@ def test_wp5_action_row_undo_redo_and_unassign(qapp):
 
     # Redo restores assignment
     assert view.redo()
-    qapp.processEvents()
+    _wait_worker_idle()
     assert view._pooled_units_map[test_gid]["cluster_id"] == target_cid
     assert view._unit_status_map[test_gid] == "Curated"
 
     # Focus assigned unit and test Backspace unassigns and hides btn_unassign
     view.select_pooled_unit(test_gid)
+    view.activateWindow()
+    view.setFocus()
     qapp.processEvents()
     assert not view.btn_unassign.isHidden()
 
     QTest.keyClick(view, Qt.Key.Key_Backspace)
-    qapp.processEvents()
+    qtbot.waitUntil(
+        lambda: view._pooled_units_map[test_gid]["cluster_id"] == -1 and view.btn_unassign.isHidden(),
+        timeout=5000,
+    )
+    _wait_worker_idle()
     assert view._pooled_units_map[test_gid]["cluster_id"] == -1
     assert view._unit_status_map[test_gid] == "Unassigned"
     assert view.btn_unassign.isHidden()

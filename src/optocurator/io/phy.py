@@ -1,13 +1,27 @@
 """Phy / Kilosort spike sorted data reader."""
 
+import math
 from pathlib import Path
-import re
 from typing import Dict, List, Optional, Tuple, Union
 import numpy as np
 import pandas as pd
 
-from optocurator.io.base import BaseSpikeReader
-from optocurator.models import UnitData
+from optocurator.analysis.waveform import _parse_params_py
+from optocurator.models import DEFAULT_SAMPLING_RATE_HZ, UnitData
+
+
+def timestamps_to_seconds(arr: np.ndarray, sampling_rate: float) -> np.ndarray:
+    """Convert a timestamp array to float64 seconds based strictly on dtype.
+
+    Integer arrays are interpreted as sample indices and divided by
+    ``sampling_rate``; floating-point arrays are assumed to already be in seconds.
+    """
+    values = np.asarray(arr)
+    if np.issubdtype(values.dtype, np.integer):
+        if sampling_rate <= 0:
+            raise ValueError(f"sampling_rate must be positive to convert sample indices, got {sampling_rate}")
+        return values.astype(np.float64) / float(sampling_rate)
+    return values.astype(np.float64)
 
 
 def load_probe_and_unit_positions(
@@ -53,9 +67,11 @@ def load_probe_and_unit_positions(
         if parent_cm.exists():
             chan_map_file = parent_cm
     hardware_channels: Optional[np.ndarray] = None
+    hw_to_site: Dict[int, int] = {}
     if chan_map_file.exists():
         try:
             hardware_channels = np.load(chan_map_file).flatten()
+            hw_to_site = {int(hw): idx for idx, hw in enumerate(hardware_channels)}
         except Exception:
             hardware_channels = None
 
@@ -103,10 +119,11 @@ def load_probe_and_unit_positions(
                             pass
                     elif uid in channel_map and probe_positions is not None:
                         ch = channel_map[uid]
-                        if 0 <= ch < len(probe_positions):
-                            probe_x_map[uid] = float(probe_positions[ch, 0])
+                        site_idx = hw_to_site.get(ch, ch) if hardware_channels is not None else ch
+                        if 0 <= site_idx < len(probe_positions):
+                            probe_x_map[uid] = float(probe_positions[site_idx, 0])
                             if uid not in depth_map:
-                                depth_map[uid] = float(probe_positions[ch, 1])
+                                depth_map[uid] = float(probe_positions[site_idx, 1])
         except Exception:
             pass
 
@@ -123,16 +140,19 @@ def load_probe_and_unit_positions(
             cluster_to_tmpl: Dict[int, int] = {}
             st_file = path / "spike_templates.npy"
             sc_file = path / "spike_clusters.npy"
-            if st_file.exists() and sc_file.exists():
-                spk_tmpl = np.load(st_file).flatten()
+            spk_cls: Optional[np.ndarray] = None
+            if sc_file.exists():
                 spk_cls = np.load(sc_file).flatten()
+            if st_file.exists() and spk_cls is not None:
+                spk_tmpl = np.load(st_file).flatten()
                 # Fast mapping of unique cluster IDs to modal template
                 df_pairs = pd.DataFrame({"cls": spk_cls, "tmpl": spk_tmpl})
                 for cid, group in df_pairs.groupby("cls"):
                     cluster_to_tmpl[int(cid)] = int(group["tmpl"].mode().iloc[0])
 
             n_templates = templates.shape[0]
-            candidate_uids = set(cluster_to_tmpl.keys()) | set(channel_map.keys())
+            sc_uids = {int(c) for c in np.unique(spk_cls)} if spk_cls is not None else set()
+            candidate_uids = set(cluster_to_tmpl.keys()) | set(channel_map.keys()) | sc_uids
             for uid in candidate_uids:
                 t_idx = cluster_to_tmpl.get(uid, uid)
                 if 0 <= t_idx < n_templates:
@@ -155,10 +175,10 @@ def load_probe_and_unit_positions(
     return channel_map, depth_map, probe_x_map, probe_positions
 
 
-class PhyKilosortReader(BaseSpikeReader):
+class PhyKilosortReader:
     """Loads spike sorted clusters and timestamps from Phy / Kilosort output directories."""
 
-    def __init__(self, default_sampling_rate: float = 30000.0) -> None:
+    def __init__(self, default_sampling_rate: float = DEFAULT_SAMPLING_RATE_HZ) -> None:
         self.default_sampling_rate = default_sampling_rate
 
     def load(
@@ -214,11 +234,8 @@ class PhyKilosortReader(BaseSpikeReader):
         if len(spike_times) == 0:
             return []
 
-        # Convert spike times to seconds if they are sample indices (integer dtype or max > 10000)
-        if np.issubdtype(spike_times.dtype, np.integer) or np.nanmax(spike_times) > 10000.0:
-            spike_times_sec = spike_times.astype(np.float64) / sampling_rate
-        else:
-            spike_times_sec = spike_times.astype(np.float64)
+        # Integer arrays are sample indices; float arrays are already in seconds.
+        spike_times_sec = timestamps_to_seconds(spike_times, sampling_rate)
 
         # Fast grouping by unit ID using argsort and unique
         sort_indices = np.argsort(spike_clusters, kind="stable")
@@ -239,8 +256,13 @@ class PhyKilosortReader(BaseSpikeReader):
             depth = float(depth_map.get(int_uid, 0.0))
             probe_x = float(probe_x_map.get(int_uid, 0.0))
 
-            # Fallback to probe_positions if available and depth/probe_x are default 0
-            if probe_positions is not None and depth == 0.0 and probe_x == 0.0 and 0 <= ch < len(probe_positions):
+            # Fallback to probe_positions only if coordinates were not resolved in metadata/templates
+            if (
+                probe_positions is not None
+                and int_uid not in depth_map
+                and int_uid not in probe_x_map
+                and 0 <= ch < len(probe_positions)
+            ):
                 probe_x = float(probe_positions[ch, 0])
                 depth = float(probe_positions[ch, 1])
 
@@ -261,22 +283,18 @@ class PhyKilosortReader(BaseSpikeReader):
         return units
 
     def _read_sampling_rate(self, folder: Path) -> float:
-        """Extract sample_rate from params.py or return default."""
-        params_file = folder / "params.py"
-        if params_file.exists():
-            try:
-                content = params_file.read_text(encoding="utf-8", errors="ignore")
-                match = re.search(r"sample_rate\s*=\s*([0-9.]+)", content)
-                if match:
-                    return float(match.group(1))
-            except Exception:
-                pass
+        """Extract sample_rate from folder or parent params.py, or return default."""
+        candidates = [folder / "params.py"]
+        if folder.parent != folder:
+            candidates.append(folder.parent / "params.py")
+        for params_file in candidates:
+            parsed = _parse_params_py(params_file)
+            if "sample_rate" in parsed:
+                try:
+                    rate = float(parsed["sample_rate"])
+                    if math.isfinite(rate) and rate > 0.0:
+                        return rate
+                except (TypeError, ValueError):
+                    continue
         return self.default_sampling_rate
-
-    def _read_cluster_metadata(
-        self, folder: Path
-    ) -> Tuple[Dict[int, int], Dict[int, float], Dict[int, float]]:
-        """Read channel, depth, and probe_x for each cluster."""
-        ch_map, d_map, px_map, _ = load_probe_and_unit_positions(folder)
-        return ch_map, d_map, px_map
 

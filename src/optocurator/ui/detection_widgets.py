@@ -16,6 +16,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from optocurator.models import MISSING_METRIC_SENTINEL
 from optocurator.ui.plots import apply_plot_style
 from optocurator.ui.theme import (
     COLOR_ACCENT,
@@ -1037,9 +1038,9 @@ class DetectionPairplotWidget(QWidget):
 
         valid = (
             np.isfinite(lat)
-            & (lat < 998.0)
+            & (lat < (MISSING_METRIC_SENTINEL - 1.0))
             & np.isfinite(jit)
-            & (jit < 998.0)
+            & (jit < (MISSING_METRIC_SENTINEL - 1.0))
             & np.isfinite(rel)
         )
         n_omitted = int(np.sum(~valid))

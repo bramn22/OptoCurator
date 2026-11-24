@@ -6,10 +6,8 @@ import pandas as pd
 from PyQt6.QtCore import QThread, pyqtSignal
 
 from optocurator.analysis.clustering import (
-    ActiveLearningCandidate,
     FeatureConfiguration,
-    compute_auto_assignments,
-    compute_entropy_ranking,
+    run_active_learning_cycle,
 )
 
 
@@ -47,11 +45,11 @@ class ActiveLearningWorker(QThread):
         self.threshold = float(threshold)
         self.max_distance_sigma = float(max_distance_sigma)
         self.feature_config = feature_config or FeatureConfiguration()
-        self.feature_matrix = feature_matrix
+        self.feature_matrix = np.array(feature_matrix, copy=True) if feature_matrix is not None else None
         self.skipped_gids = set(skipped_gids) if skipped_gids else set()
         self.random_state = random_state
-        self.spike_data_map = spike_data_map
-        self.psth_cache = psth_cache
+        self.spike_data_map = dict(spike_data_map) if spike_data_map is not None else None
+        self.psth_cache = dict(psth_cache) if psth_cache is not None else None
         self.auto_assign_enabled = bool(auto_assign_enabled)
         self.n_estimators = max(10, int(n_estimators))
         self.pulse_duration_ms = pulse_duration_ms
@@ -59,71 +57,24 @@ class ActiveLearningWorker(QThread):
     def run(self) -> None:
         """Execute background Random Forest fitting, auto-assignment, and entropy ranking."""
         try:
-            # 1. Compute auto-assignments based on confidence threshold and all unit probabilities
-            raw_auto_assignments, confidences, all_probabilities = compute_auto_assignments(
-                df=self.df,
-                cluster_labels=self.cluster_labels,
-                unit_status_map=self.unit_status_map,
-                threshold=self.threshold,
-                max_distance_sigma=self.max_distance_sigma,
-                feature_config=self.feature_config,
-                feature_matrix=self.feature_matrix,
-                n_estimators=self.n_estimators,
-                random_state=self.random_state,
-                spike_data_map=self.spike_data_map,
-                psth_cache=self.psth_cache,
-                return_all_probabilities=True,
-                pulse_duration_ms=self.pulse_duration_ms,
+            candidates, auto_assignments, confidences, all_probabilities, suggested_assignments = (
+                run_active_learning_cycle(
+                    df=self.df,
+                    cluster_labels=self.cluster_labels,
+                    unit_status_map=self.unit_status_map,
+                    threshold=self.threshold,
+                    max_distance_sigma=self.max_distance_sigma,
+                    feature_config=self.feature_config,
+                    feature_matrix=self.feature_matrix,
+                    skipped_gids=self.skipped_gids,
+                    n_estimators=self.n_estimators,
+                    random_state=self.random_state,
+                    spike_data_map=self.spike_data_map,
+                    psth_cache=self.psth_cache,
+                    auto_assign_enabled=self.auto_assign_enabled,
+                    pulse_duration_ms=self.pulse_duration_ms,
+                )
             )
-
-            # If auto-assignment is enabled, assign units passing threshold.
-            # If auto-assignment is disabled, capture suggested putative assignments while suppressing formal assignments.
-            if self.auto_assign_enabled:
-                auto_assignments = {gid: cid for gid, cid in raw_auto_assignments.items() if cid >= 0}
-                suggested_assignments: Dict[str, int] = {}
-            else:
-                auto_assignments = {}
-                suggested_assignments = {
-                    gid: cid
-                    for gid, cid in raw_auto_assignments.items()
-                    if cid >= 0 and self.unit_status_map.get(gid, "Unassigned") not in ("Curated", "Seeded")
-                }
-
-            # 2. Derive updated labels incorporating auto-assignments for candidate ranking
-            temp_labels = np.array(self.cluster_labels, copy=True)
-            unit_ids = (
-                self.df["global_unit_id"].astype(str).tolist()
-                if "global_unit_id" in self.df.columns
-                else [f"u_{i}" for i in range(len(self.df))]
-            )
-
-            for i, gid in enumerate(unit_ids):
-                status = self.unit_status_map.get(gid, "Unassigned")
-                if status == "Curated":
-                    continue
-                if gid in auto_assignments:
-                    pred_cid = auto_assignments[gid]
-                    if pred_cid >= 0:
-                        temp_labels[i] = pred_cid
-                    elif status not in ("Seeded", "Curated"):
-                        temp_labels[i] = -1
-
-            # 3. Compute pure Maximum Shannon Entropy ranking with skipped units cycled to back
-            candidates = compute_entropy_ranking(
-                df=self.df,
-                cluster_labels=temp_labels,
-                unit_status_map=self.unit_status_map,
-                feature_matrix=self.feature_matrix,
-                skipped_unit_ids=self.skipped_gids,
-                n_estimators=self.n_estimators,
-                random_state=self.random_state,
-                cycle_skipped=True,
-                feature_config=self.feature_config,
-                spike_data_map=self.spike_data_map,
-                psth_cache=self.psth_cache,
-                pulse_duration_ms=self.pulse_duration_ms,
-            )
-
             self.results_ready.emit(candidates, auto_assignments, confidences, all_probabilities, suggested_assignments)
         except Exception as exc:
             self.error_occurred.emit(str(exc))

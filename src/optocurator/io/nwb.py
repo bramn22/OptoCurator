@@ -8,8 +8,13 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 import h5py
 import numpy as np
 
-from optocurator.io.base import BaseSpikeReader, BaseStimulusReader
-from optocurator.models import StimulusProtocol, UnitData
+from optocurator.models import (
+    DEFAULT_PULSE_DURATION_MS,
+    DEFAULT_PULSE_DURATION_S,
+    DEFAULT_SAMPLING_RATE_HZ,
+    StimulusProtocol,
+    UnitData,
+)
 
 
 _OPTO_INTERVAL_PATTERNS = ("pulse", "opto", "raised_cosine", "laser", "stim_train")
@@ -147,9 +152,9 @@ def inspect_nwb(nwb_path: Union[str, Path]) -> NwbSessionSummary:
                 stops = np.asarray(grp["stop_time"][:], dtype=np.float64)
                 durs_ms = (stops - starts) * 1000.0
                 valid_durs = durs_ms[np.isfinite(durs_ms) & (durs_ms > 0)]
-                med_dur = float(np.median(valid_durs)) if len(valid_durs) > 0 else 20.0
+                med_dur = float(np.median(valid_durs)) if len(valid_durs) > 0 else DEFAULT_PULSE_DURATION_MS
             else:
-                med_dur = 20.0
+                med_dur = DEFAULT_PULSE_DURATION_MS
             cond_str = ""
             if "condition" in grp and len(grp["condition"]) > 0:
                 cond_str = _decode_str(grp["condition"][0])
@@ -231,14 +236,14 @@ def load_nwb_probe_geometry(
         return np.asarray(coords, dtype=np.float64), el_map
 
 
-class NwbSpikeReader(BaseSpikeReader):
+class NwbSpikeReader:
     """Loads units, spike times, and electrode coordinates from an NWB file via h5py."""
 
     def __init__(
         self,
         probe_name: Optional[str] = None,
         qc_only: bool = True,
-        sampling_rate: float = 30000.0,
+        sampling_rate: float = DEFAULT_SAMPLING_RATE_HZ,
     ) -> None:
         self.probe_name = probe_name
         self.qc_only = qc_only
@@ -246,11 +251,11 @@ class NwbSpikeReader(BaseSpikeReader):
 
     def load(
         self,
-        folder_path: Union[str, Path],
+        nwb_path: Union[str, Path],
         session_id: Optional[str] = None,
     ) -> List[UnitData]:
         """Load UnitData objects for the configured probe and QC filter from an NWB file."""
-        path = Path(folder_path)
+        path = Path(nwb_path)
         if not path.is_file():
             raise FileNotFoundError(f"NWB file not found: {path}")
 
@@ -343,20 +348,20 @@ class NwbSpikeReader(BaseSpikeReader):
         return units
 
 
-class NwbStimulusReader(BaseStimulusReader):
+class NwbStimulusReader:
     """Loads optogenetic stimulation protocols from an NWB file."""
 
     def __init__(
         self,
         expand_pulse_trains: bool = True,
-        default_pulse_duration_s: float = 0.010,
+        default_pulse_duration_s: float = DEFAULT_PULSE_DURATION_S,
     ) -> None:
         self.expand_pulse_trains = expand_pulse_trains
         self.default_pulse_duration_s = default_pulse_duration_s
 
-    def discover(self, folder_path: Union[str, Path]) -> List[Path]:
-        """Return [nwb_path] if the path is an existing .nwb file."""
-        path = Path(folder_path)
+    def discover(self, nwb_path: Union[str, Path]) -> List[Path]:
+        """Return [nwb_path] if the path is an existing .nwb file (or sorted *.nwb in directory)."""
+        path = Path(nwb_path)
         if path.is_file() and path.suffix.lower() == ".nwb":
             return [path]
         if path.is_dir():
@@ -366,7 +371,7 @@ class NwbStimulusReader(BaseStimulusReader):
     def load(
         self,
         file_path: Union[str, Path],
-        sampling_rate: float = 30000.0,
+        sampling_rate: float = DEFAULT_SAMPLING_RATE_HZ,
         protocol_key: Optional[str] = None,
     ) -> StimulusProtocol:
         """Load the first (or named) optogenetic protocol from an NWB file."""

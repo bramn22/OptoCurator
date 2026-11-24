@@ -131,7 +131,7 @@ def test_detection_view_export_progress_dialog(qapp, tmp_path, monkeypatch):
 
     monkeypatch.setattr(QProgressDialog, "__init__", mock_init)
 
-    detection = DetectionView()
+    detection = DetectionView(load_mock=True)
     export_dir = tmp_path / "export_test"
     csv_path = detection.export_curated_session(export_dir=export_dir, show_dialog=False)
 

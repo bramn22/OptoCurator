@@ -7,7 +7,7 @@ import numpy as np
 import pandas as pd
 import pyqtgraph as pg
 from PyQt6.QtCore import QRectF, QSize, Qt, pyqtSignal
-from PyQt6.QtGui import QBrush, QColor, QDoubleValidator, QFont, QFontMetrics, QKeySequence, QPainter, QPalette, QShortcut
+from PyQt6.QtGui import QBrush, QColor, QFont, QFontMetrics, QKeySequence, QPainter, QPalette, QShortcut
 from PyQt6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -28,7 +28,6 @@ from PyQt6.QtWidgets import (
     QPushButton,
     QScrollArea,
     QSizePolicy,
-    QSlider,
     QStyle,
     QStyledItemDelegate,
     QStyleOptionViewItem,
@@ -57,7 +56,15 @@ from optocurator.io.nwb import (
 )
 from optocurator.io.phy import PhyKilosortReader
 from optocurator.io.pulses import MatNpyStimulusReader
-from optocurator.models import StatsParameters, StimulusProtocol, UnitData, UnitMetrics
+from optocurator.models import (
+    DEFAULT_SAMPLING_RATE_HZ,
+    MISSING_METRIC_SENTINEL,
+    StatsParameters,
+    StimulusProtocol,
+    UnitData,
+    UnitMetrics,
+    is_valid_metric_value,
+)
 from optocurator.ui.detection_widgets import (
     DetectionCriterionRow,
     DetectionPairplotWidget,
@@ -66,6 +73,7 @@ from optocurator.ui.detection_widgets import (
 )
 from optocurator.ui.plots import (
     DEFAULT_PULSE_DURATION_MS,
+    NumericTableWidgetItem,
     SiliconProbeWidget,
     infer_pulse_duration_ms,
     render_psth,
@@ -137,22 +145,6 @@ _LIKELY_THRESHOLD = 0.30
 _WINDOW_MIN_SPAN_MS = 10.0
 _WINDOW_MIN_START_MS = -500.0
 _WINDOW_MAX_END_MS = 1000.0
-
-
-class NumericTableWidgetItem(QTableWidgetItem):
-    """QTableWidgetItem supporting true numeric and custom sort keys."""
-
-    def __init__(self, text: str, sort_key: Any = None):
-        super().__init__(text)
-        self.sort_key = sort_key if sort_key is not None else text
-
-    def __lt__(self, other: "QTableWidgetItem") -> bool:
-        if isinstance(other, NumericTableWidgetItem):
-            try:
-                return self.sort_key < other.sort_key
-            except TypeError:
-                return str(self.sort_key) < str(other.sort_key)
-        return super().__lt__(other)
 
 
 class _FilterStatusComboBox(QComboBox):
@@ -283,180 +275,6 @@ class _StatusDelegate(QStyledItemDelegate):
         painter.restore()
 
 
-class _NextLikelyButton(QPushButton):
-    """Compact 'Next likely' button with an embedded count badge pill."""
-
-    def __init__(self, parent: Optional[QWidget] = None) -> None:
-        super().__init__("Next likely untagged (0)", parent)
-        self._count: int = 0
-        self.setCursor(Qt.CursorShape.PointingHandCursor)
-
-    def set_count(self, n_likely: int) -> None:
-        self._count = max(0, int(n_likely))
-        self.setText(f"Next likely untagged ({self._count})")
-        self.setEnabled(self._count > 0)
-        self.update()
-
-    def sizeHint(self) -> QSize:
-        fm = QFontMetrics(self.font())
-        label_w = fm.horizontalAdvance("Next likely")
-        badge_w = max(18, fm.horizontalAdvance(str(self._count)) + 10)
-        return QSize(label_w + badge_w + 22, 26)
-
-    def minimumSizeHint(self) -> QSize:
-        return self.sizeHint()
-
-    def paintEvent(self, _event: Any) -> None:
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-        rect = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
-
-        enabled = self.isEnabled()
-        hovered = enabled and self.underMouse()
-        if not enabled:
-            bg = QColor(COLOR_SURFACE_MUTED)
-            border = QColor(COLOR_DIVIDER)
-            fg = QColor(COLOR_TEXT_MUTED)
-            badge_bg = QColor(COLOR_BORDER_STRONG)
-            badge_fg = QColor(COLOR_PANEL)
-        elif hovered:
-            bg = QColor(COLOR_ACCENT)
-            border = QColor(COLOR_ACCENT)
-            fg = QColor(COLOR_PANEL)
-            badge_bg = QColor(COLOR_PANEL)
-            badge_fg = QColor(COLOR_ACCENT)
-        else:
-            bg = QColor(COLOR_ACCENT_BG)
-            border = QColor(COLOR_ACCENT)
-            fg = QColor(COLOR_ACCENT)
-            badge_bg = QColor(COLOR_ACCENT)
-            badge_fg = QColor(COLOR_PANEL)
-
-        painter.setPen(border)
-        painter.setBrush(bg)
-        painter.drawRoundedRect(rect, 5.0, 5.0)
-
-        badge_text = str(self._count)
-        fm = QFontMetrics(self.font())
-        badge_w = max(18.0, float(fm.horizontalAdvance(badge_text)) + 10.0)
-        badge_h = 16.0
-        badge_x = rect.right() - badge_w - 6.0
-        badge_y = rect.center().y() - badge_h * 0.5
-        badge_rect = QRectF(badge_x, badge_y, badge_w, badge_h)
-
-        text_rect = QRectF(rect.left() + 8.0, rect.top(), max(0.0, badge_x - rect.left() - 12.0), rect.height())
-        painter.setPen(fg)
-        painter.drawText(
-            text_rect,
-            int(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter),
-            "Next likely",
-        )
-
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(badge_bg)
-        painter.drawRoundedRect(badge_rect, 8.0, 8.0)
-
-        painter.setPen(badge_fg)
-        painter.drawText(badge_rect, int(Qt.AlignmentFlag.AlignCenter), badge_text)
-
-
-class ThresholdLineEdit(QLineEdit):
-    """Custom QLineEdit for threshold values with numeric validation and QDoubleSpinBox-like API compatibility."""
-
-    valueChanged = pyqtSignal(float)
-
-    def __init__(
-        self,
-        default_val: Union[float, int, str] = 0.0,
-        min_val: Optional[float] = None,
-        max_val: Optional[float] = None,
-        decimals: int = 2,
-        parent: Optional[QWidget] = None,
-    ):
-        super().__init__(parent)
-        self._min_val = min_val
-        self._max_val = max_val
-        self._decimals = decimals
-        try:
-            self._default_float = float(default_val)
-        except (ValueError, TypeError):
-            self._default_float = 0.0
-
-        validator = QDoubleValidator(self)
-        validator.setNotation(QDoubleValidator.Notation.StandardNotation)
-        if min_val is not None:
-            validator.setBottom(min_val)
-        if max_val is not None:
-            validator.setTop(max_val)
-        validator.setDecimals(decimals)
-        self.setValidator(validator)
-
-        self.setValue(default_val)
-
-        self.editingFinished.connect(self._on_editing_finished)
-        self.textChanged.connect(self._on_text_changed)
-
-    def value(self) -> float:
-        """Return the current value as a float, clamped to [min_val, max_val] if set."""
-        text = self.text().strip()
-        try:
-            val = float(text)
-            if self._min_val is not None and val < self._min_val:
-                val = self._min_val
-            if self._max_val is not None and val > self._max_val:
-                val = self._max_val
-            return val
-        except (ValueError, TypeError):
-            return self._default_float
-
-    def setValue(self, val: Union[float, int, str]) -> None:
-        """Set numeric value with decimal precision formatting."""
-        try:
-            fval = float(val)
-        except (ValueError, TypeError):
-            fval = self._default_float
-
-        if self._min_val is not None and fval < self._min_val:
-            fval = self._min_val
-        if self._max_val is not None and fval > self._max_val:
-            fval = self._max_val
-
-        if self._decimals is not None:
-            if 0 < abs(fval) < 10 ** (-self._decimals):
-                formatted = f"{fval:.6f}".rstrip("0")
-                if formatted.endswith("."):
-                    formatted += "0"
-            else:
-                formatted = f"{fval:.{self._decimals}f}"
-        else:
-            formatted = str(fval)
-
-        if self.text() != formatted:
-            self.setText(formatted)
-            self.valueChanged.emit(fval)
-
-    def _on_editing_finished(self) -> None:
-        val = self.value()
-        if self._decimals is not None:
-            self.blockSignals(True)
-            if 0 < abs(val) < 10 ** (-self._decimals):
-                formatted = f"{val:.6f}".rstrip("0")
-                if formatted.endswith("."):
-                    formatted += "0"
-            else:
-                formatted = f"{val:.{self._decimals}f}"
-            self.setText(formatted)
-            self.blockSignals(False)
-        self.valueChanged.emit(val)
-
-    def _on_text_changed(self, text: str) -> None:
-        try:
-            val = float(text.strip())
-            self.valueChanged.emit(val)
-        except (ValueError, TypeError):
-            pass
-
-
 def _attach_criterion_compat(row: DetectionCriterionRow) -> QLineEdit:
     """Attach QDoubleSpinBox-like `.value()` and `.setValue()` methods to a criterion edit box."""
     edit = row.edit_threshold
@@ -528,8 +346,7 @@ class DetectionView(QWidget):
         # Curation & undo state
         self._is_dirty: bool = False
         self._focused_unit_id: Optional[int] = None
-        self._next_likely_cursor: int = 0
-        self._criteria_undo_stack: List[Dict[str, Tuple[bool, float]]] = []
+        self._criteria_undo_stack: List[Dict[str, Any]] = []
         self._criteria_state: Dict[str, Tuple[bool, float]] = dict(_DEFAULT_CRITERIA)
         self._updating_criteria_ui: bool = False
         self._channel_positions: Optional[np.ndarray] = None
@@ -538,7 +355,6 @@ class DetectionView(QWidget):
         self._init_shortcuts()
         self._update_criteria_visuals()
         self._update_summary_box()
-        self._update_next_likely_button()
 
         if load_mock:
             self._load_mock_data()
@@ -633,12 +449,6 @@ class DetectionView(QWidget):
         self.lbl_unit_summary = QLabel("0 units", col)
         self.lbl_unit_summary.setStyleSheet(DIALOG_MUTED_LABEL_STYLE)
         filter_row.addWidget(self.lbl_unit_summary)
-
-        self.btn_next_likely = _NextLikelyButton(col)
-        self.btn_next_likely.setToolTip("Cycle through untagged units with highest likelihood (≥ 30%)")
-        self.btn_next_likely.setEnabled(False)
-        self.btn_next_likely.clicked.connect(self._on_next_likely_clicked)
-        self.btn_next_likely.hide()
 
         layout.addLayout(filter_row)
 
@@ -1035,19 +845,6 @@ class DetectionView(QWidget):
         self.chk_wv = self.chk_salt
         self.spin_wv = self.spin_salt
 
-        # Hidden backward-compatibility sliders
-        self.slider_latency = QSlider(Qt.Orientation.Horizontal, col)
-        self.slider_jitter = QSlider(Qt.Orientation.Horizontal, col)
-        self.slider_rel = QSlider(Qt.Orientation.Horizontal, col)
-        self.slider_salt = QSlider(Qt.Orientation.Horizontal, col)
-        self.slider_wv = self.slider_salt
-        for sld in (self.slider_latency, self.slider_jitter, self.slider_rel, self.slider_salt):
-            sld.hide()
-        self.slider_salt.setRange(0, 1000)
-        self.slider_salt.setValue(self._p_to_salt_slider(0.0500))
-        self.slider_salt.valueChanged.connect(self._on_salt_slider_changed)
-        self.row_salt.threshold_changed.connect(self._on_salt_spin_changed)
-
         layout.addSpacing(16)
 
         # Summary box (4 clean rows, 16 px below last criterion row)
@@ -1180,30 +977,42 @@ class DetectionView(QWidget):
                 row.edit_threshold.setText(row._format_threshold(float(thresh)))
                 row.edit_threshold.blockSignals(False)
                 row._apply_enabled_visuals(bool(enabled))
-            self._on_salt_spin_changed(state["salt"][1])
             self._criteria_state = {k: (bool(v[0]), float(v[1])) for k, v in state.items()}
         finally:
             self._updating_criteria_ui = False
+
+    def _push_detection_undo_snapshot(self) -> None:
+        """Push current criteria thresholds and manual overrides onto the Detection undo stack."""
+        self._criteria_undo_stack.append({
+            "criteria": dict(self._criteria_state),
+            "manual_overrides": dict(self.manual_overrides),
+        })
+        self.btn_criteria_undo.setEnabled(len(self._criteria_undo_stack) > 0)
 
     def _on_criteria_ui_changed(self, *_args: Any) -> None:
         if self._updating_criteria_ui:
             return
         new_state = self._read_criteria_from_ui()
         if new_state != self._criteria_state:
-            self._criteria_undo_stack.append(dict(self._criteria_state))
+            self._push_detection_undo_snapshot()
             self._criteria_state = new_state
-            self.btn_criteria_undo.setEnabled(len(self._criteria_undo_stack) > 0)
         self._apply_thresholds()
         if self.units or self.table_units.rowCount() > 0:
             self._set_dirty(True)
 
     def undo_criteria_change(self) -> None:
-        """Step back to the previous tagging criteria state without pushing a duplicate undo entry."""
+        """Step back to the previous tagging criteria and manual-override state."""
         if not self._criteria_undo_stack:
             return
-        prev_state = self._criteria_undo_stack.pop()
+        prev = self._criteria_undo_stack.pop()
         self.btn_criteria_undo.setEnabled(len(self._criteria_undo_stack) > 0)
-        self._write_criteria_to_ui(prev_state)
+        if "criteria" in prev and "manual_overrides" in prev:
+            prev_criteria = prev["criteria"]
+            self.manual_overrides.clear()
+            self.manual_overrides.update(prev["manual_overrides"])
+        else:
+            prev_criteria = prev
+        self._write_criteria_to_ui(prev_criteria)
         self._apply_thresholds()
         if self.units or self.table_units.rowCount() > 0:
             self._set_dirty(True)
@@ -1212,8 +1021,7 @@ class DetectionView(QWidget):
         """Reset all 5 criteria to default thresholds and enabled state."""
         new_state = dict(_DEFAULT_CRITERIA)
         if new_state != self._criteria_state:
-            self._criteria_undo_stack.append(dict(self._criteria_state))
-            self.btn_criteria_undo.setEnabled(len(self._criteria_undo_stack) > 0)
+            self._push_detection_undo_snapshot()
         self._write_criteria_to_ui(new_state)
         self._apply_thresholds()
         if self.units or self.table_units.rowCount() > 0:
@@ -1289,7 +1097,7 @@ class DetectionView(QWidget):
             if summary.protocols:
                 proto_txt = ", ".join(f"{p.display_name} ({p.n_intervals})" for p in summary.protocols)
             else:
-                proto_txt = "None detected (will synthesize fallback)"
+                proto_txt = "None detected"
             lbl_protos = QLabel(proto_txt, dlg)
             lbl_protos.setWordWrap(True)
             form.addRow("Protocols:", lbl_protos)
@@ -1344,9 +1152,11 @@ class DetectionView(QWidget):
             self.session_id = units[0].session_id
             self.units = units
             self.units_by_id = {u.unit_id: u for u in units}
+            self.metrics.clear()
             self.manual_overrides.clear()
+            self._criteria_undo_stack.clear()
+            self.btn_criteria_undo.setEnabled(False)
             self._focused_unit_id = None
-            self._next_likely_cursor = 0
             self._disk_waveform_unit_ids = set()
             self.lbl_session.setText(f"Session: {self.session_id}")
             self.lbl_session.setToolTip(str(nwb_path))
@@ -1356,7 +1166,7 @@ class DetectionView(QWidget):
 
             stim_reader = NwbStimulusReader(expand_pulse_trains=bool(expand_pulse_trains))
             protos = stim_reader.load_all(nwb_path)
-            self.protocols.clear()
+            self.protocols = {}
             self.combo_proto.blockSignals(True)
             self.combo_proto.clear()
             if protos:
@@ -1365,12 +1175,7 @@ class DetectionView(QWidget):
                     self.combo_proto.addItem(f"{proto.name} ({len(proto.onsets)} pulses)", proto.name)
                 self.current_protocol = protos[0]
             else:
-                mock_onsets = np.arange(10.0, 50.0, 1.0)
-                mock_offsets = mock_onsets + 0.010
-                fallback_proto = StimulusProtocol(onsets=mock_onsets, offsets=mock_offsets, name="default")
-                self.protocols["default"] = fallback_proto
-                self.current_protocol = fallback_proto
-                self.combo_proto.addItem("default (synthesized)", "default")
+                self.current_protocol = None
             self.combo_proto.blockSignals(False)
             self._apply_protocol_default_stats_params(reset_customized=True)
 
@@ -1455,9 +1260,11 @@ class DetectionView(QWidget):
             self.session_id = units[0].session_id
             self.units = units
             self.units_by_id = {u.unit_id: u for u in units}
+            self.metrics.clear()
             self.manual_overrides.clear()
+            self._criteria_undo_stack.clear()
+            self.btn_criteria_undo.setEnabled(False)
             self._focused_unit_id = None
-            self._next_likely_cursor = 0
             self.lbl_session.setText(f"Session: {self.session_id}")
             self.lbl_session.setToolTip(str(folder_path))
 
@@ -1475,7 +1282,7 @@ class DetectionView(QWidget):
 
             # Discover stimulus protocols
             pulse_files = self.stim_reader.discover(folder_path)
-            self.protocols.clear()
+            self.protocols = {}
             self.combo_proto.blockSignals(True)
             self.combo_proto.clear()
 
@@ -1486,23 +1293,19 @@ class DetectionView(QWidget):
                     self.combo_proto.addItem(f"{proto.name} ({len(proto.onsets)} pulses)", proto.name)
                 self.current_protocol = next(iter(self.protocols.values()))
             else:
-                mock_onsets = np.arange(10.0, 50.0, 1.0)
-                mock_offsets = mock_onsets + 0.02
-                fallback_proto = StimulusProtocol(onsets=mock_onsets, offsets=mock_offsets, name="default")
-                self.protocols["default"] = fallback_proto
-                self.current_protocol = fallback_proto
-                self.combo_proto.addItem("default (synthesized)", "default")
+                self.current_protocol = None
 
             self.combo_proto.blockSignals(False)
             self._apply_protocol_default_stats_params(reset_customized=True)
 
             pre_none_ids = {u.unit_id for u in self.units if u.waveforms is None}
-            extract_session_waveforms(
-                Path(folder_path),
-                self.units,
-                self.current_protocol.onsets,
-                self.stats_params,
-            )
+            if self.current_protocol is not None:
+                extract_session_waveforms(
+                    Path(folder_path),
+                    self.units,
+                    self.current_protocol.onsets,
+                    self.stats_params,
+                )
             self._disk_waveform_unit_ids = {
                 u.unit_id for u in self.units if u.unit_id in pre_none_ids and u.waveforms is not None
             }
@@ -1554,7 +1357,6 @@ class DetectionView(QWidget):
         self.stats_params = StatsParameters.default()
         self._stats_params_customized = False
         self._focused_unit_id = None
-        self._next_likely_cursor = 0
         self._channel_positions = None
         self._criteria_undo_stack.clear()
         self.btn_criteria_undo.setEnabled(False)
@@ -1581,7 +1383,6 @@ class DetectionView(QWidget):
 
         self._update_criteria_visuals()
         self._update_summary_box()
-        self._update_next_likely_button()
         self._update_unit_summary_count()
         self._set_dirty(False)
         self.session_changed.emit()
@@ -1846,11 +1647,11 @@ class DetectionView(QWidget):
             m = self.metrics.get(uid)
             uid_str = f"u{uid:04d}"
 
-            lat_valid = bool(m and np.isfinite(m.latency_ms) and m.latency_ms < 998.0)
+            lat_valid = bool(m and is_valid_metric_value(m.latency_ms))
             lat_val = m.latency_ms if lat_valid else float("inf")
             lat_str = f"{m.latency_ms:.1f}" if lat_valid else "—"
 
-            jit_valid = bool(m and np.isfinite(m.jitter_ms) and m.jitter_ms < 998.0)
+            jit_valid = bool(m and is_valid_metric_value(m.jitter_ms))
             jit_val = m.jitter_ms if jit_valid else float("inf")
             jit_str = f"{m.jitter_ms:.1f}" if jit_valid else "—"
 
@@ -1956,7 +1757,6 @@ class DetectionView(QWidget):
         self._apply_status_filter()
         self._update_criteria_visuals()
         self._update_summary_box()
-        self._update_next_likely_button()
         self._update_pairplot()
         self._update_probe_widget()
 
@@ -2038,7 +1838,6 @@ class DetectionView(QWidget):
             self._update_unit_summary_count()
             self._update_criteria_visuals()
             self._update_summary_box()
-            self._update_next_likely_button()
             self._update_pairplot()
             self._update_probe_widget()
             return
@@ -2067,9 +1866,9 @@ class DetectionView(QWidget):
                 wf_val = float(m.waveform_correlation) if wf_avail else float("nan")
             else:
                 it_lat_txt = self.table_units.item(row, _COL_LAT).text()
-                lat_val = float(it_lat_txt) if it_lat_txt not in ("N/A", "—") else 999.0
+                lat_val = float(it_lat_txt) if it_lat_txt not in ("N/A", "—") else MISSING_METRIC_SENTINEL
                 it_jit_txt = self.table_units.item(row, _COL_JIT).text()
-                jit_val = float(it_jit_txt) if it_jit_txt not in ("N/A", "—") else 999.0
+                jit_val = float(it_jit_txt) if it_jit_txt not in ("N/A", "—") else MISSING_METRIC_SENTINEL
                 rel_val = float(self.table_units.item(row, _COL_REL).text())
                 salt_item = self.table_units.item(row, _COL_SALT)
                 salt_val = salt_item.sort_key if isinstance(salt_item, NumericTableWidgetItem) else 1.0
@@ -2085,11 +1884,11 @@ class DetectionView(QWidget):
                     is_tagged = bool(passes_lat and passes_jit and passes_rel and passes_salt)
 
             # Update failing cell colors (missing values stay muted, never red)
-            lat_missing = (not np.isfinite(lat_val)) or (lat_val >= 998.0)
+            lat_missing = not is_valid_metric_value(lat_val)
             self.table_units.item(row, _COL_LAT).setForeground(
                 muted_brush if lat_missing else (danger_brush if (use_lat and lat_val > max_lat) else default_brush)
             )
-            jit_missing = (not np.isfinite(jit_val)) or (jit_val >= 998.0)
+            jit_missing = not is_valid_metric_value(jit_val)
             self.table_units.item(row, _COL_JIT).setForeground(
                 muted_brush if jit_missing else (danger_brush if (use_jit and jit_val > max_jit) else default_brush)
             )
@@ -2149,7 +1948,6 @@ class DetectionView(QWidget):
         self._update_focused_unit_header()
         self._update_criteria_visuals()
         self._update_summary_box()
-        self._update_next_likely_button()
         self._update_pairplot()
         self._update_probe_widget()
 
@@ -2163,6 +1961,7 @@ class DetectionView(QWidget):
         currently_tagged = self._is_row_tagged(row)
         new_tagged = not currently_tagged
 
+        self._push_detection_undo_snapshot()
         self.manual_overrides[int_uid] = new_tagged
         if int_uid in self.metrics:
             self.metrics[int_uid].is_tagged = new_tagged
@@ -2192,7 +1991,6 @@ class DetectionView(QWidget):
         self._apply_status_filter()
         self._update_focused_unit_header()
         self._update_summary_box()
-        self._update_next_likely_button()
         self._update_pairplot()
         self._update_probe_widget()
         self._set_dirty(True)
@@ -2271,35 +2069,6 @@ class DetectionView(QWidget):
             unit_word = "unit" if total == 1 else "units"
             self.lbl_unit_summary.setText(f"{total} {unit_word}")
 
-    def _get_likely_untagged_unit_ids(self) -> List[int]:
-        """Return untagged unit IDs with likelihood >= 0.30, sorted descending by likelihood."""
-        candidates: List[int] = []
-        for row in range(self.table_units.rowCount()):
-            if self._is_row_tagged(row):
-                continue
-            uid = self._row_unit_id(row)
-            m = self.metrics.get(uid)
-            lik = float(getattr(m, "likelihood", 0.0)) if m else 0.0
-            if np.isfinite(lik) and lik >= _LIKELY_THRESHOLD:
-                candidates.append(uid)
-        candidates.sort(key=lambda uid: (-self.metrics[uid].likelihood, uid))
-        return candidates
-
-    def _update_next_likely_button(self) -> None:
-        likely_ids = self._get_likely_untagged_unit_ids()
-        n_likely = len(likely_ids)
-        self.btn_next_likely.set_count(n_likely)
-        if n_likely > 0 and self._next_likely_cursor >= n_likely:
-            self._next_likely_cursor = 0
-
-    def _on_next_likely_clicked(self) -> None:
-        likely_ids = self._get_likely_untagged_unit_ids()
-        if not likely_ids:
-            return
-        uid = likely_ids[self._next_likely_cursor % len(likely_ids)]
-        self._next_likely_cursor = (self._next_likely_cursor + 1) % len(likely_ids)
-        self._focus_unit_by_id(uid)
-
     def _focus_unit_by_id(self, unit_id: int) -> None:
         """Select and focus the specified unit ID in the units table."""
         for row in range(self.table_units.rowCount()):
@@ -2317,48 +2086,6 @@ class DetectionView(QWidget):
             uid = points[0].data()
             if uid is not None:
                 self._focus_unit_by_id(int(uid))
-
-    # --- Logarithmic SALT Slider Compatibility ---
-
-    @staticmethod
-    def _p_to_salt_slider(p: float) -> int:
-        if p <= 1e-4:
-            return 0
-        if p >= 1.0:
-            return 1000
-        log_val = math.log10(p)
-        fraction = (log_val - (-4.0)) / 4.0
-        return int(round(fraction * 1000))
-
-    @staticmethod
-    def _salt_slider_to_p(v: int) -> float:
-        if v <= 0:
-            return 0.0001
-        if v >= 1000:
-            return 1.0
-        f = v / 1000.0
-        p = 10.0 ** (-4.0 + 4.0 * f)
-        if abs(p - 0.05) < 0.0005:
-            return 0.05
-        if p < 0.01:
-            return round(p, 4)
-        if p < 0.1:
-            return round(p, 3)
-        return round(p, 2)
-
-    def _on_salt_slider_changed(self, value: int) -> None:
-        p_val = self._salt_slider_to_p(value)
-        self.row_salt.edit_threshold.blockSignals(True)
-        self.row_salt._threshold = p_val
-        self.row_salt.edit_threshold.setText(self.row_salt._format_threshold(p_val))
-        self.row_salt.edit_threshold.blockSignals(False)
-        self._on_criteria_ui_changed()
-
-    def _on_salt_spin_changed(self, value: float) -> None:
-        slider_val = self._p_to_salt_slider(value)
-        self.slider_salt.blockSignals(True)
-        self.slider_salt.setValue(slider_val)
-        self.slider_salt.blockSignals(False)
 
     def _on_table_double_clicked(self, _item: QTableWidgetItem) -> None:
         self._toggle_selected_unit_tag()
@@ -2426,15 +2153,13 @@ class DetectionView(QWidget):
             self.metrics[uid].latency_ms
             for uid in uids
             if uid in self.metrics
-            and np.isfinite(self.metrics[uid].latency_ms)
-            and self.metrics[uid].latency_ms < 998.0
+            and is_valid_metric_value(self.metrics[uid].latency_ms)
         ]
         jit_vals = [
             self.metrics[uid].jitter_ms
             for uid in uids
             if uid in self.metrics
-            and np.isfinite(self.metrics[uid].jitter_ms)
-            and self.metrics[uid].jitter_ms < 998.0
+            and is_valid_metric_value(self.metrics[uid].jitter_ms)
         ]
         rel_vals = [self.metrics[uid].reliability for uid in uids if uid in self.metrics]
         salt_vals = [self.metrics[uid].salt_p_value for uid in uids if uid in self.metrics]
@@ -2454,12 +2179,12 @@ class DetectionView(QWidget):
 
         lat_focused = (
             focused_m.latency_ms
-            if (focused_m and np.isfinite(focused_m.latency_ms) and focused_m.latency_ms < 998.0)
+            if (focused_m and is_valid_metric_value(focused_m.latency_ms))
             else None
         )
         jit_focused = (
             focused_m.jitter_ms
-            if (focused_m and np.isfinite(focused_m.jitter_ms) and focused_m.jitter_ms < 998.0)
+            if (focused_m and is_valid_metric_value(focused_m.jitter_ms))
             else None
         )
 
@@ -2536,8 +2261,8 @@ class DetectionView(QWidget):
             if m is None:
                 continue
             uids.append(u.unit_id)
-            lats.append(m.latency_ms if m.latency_ms < 500.0 else float("nan"))
-            jits.append(m.jitter_ms if m.jitter_ms < 500.0 else float("nan"))
+            lats.append(m.latency_ms if is_valid_metric_value(m.latency_ms) else float("nan"))
+            jits.append(m.jitter_ms if is_valid_metric_value(m.jitter_ms) else float("nan"))
             rels.append(m.reliability)
             tags.append(bool(m.is_tagged))
 
@@ -2822,8 +2547,11 @@ class DetectionView(QWidget):
 
         raster_y_label = "Pulse (by first spike)" if self.raster_order_by == "latency" else "Pulse"
 
-        if int_uid in self.units_by_id and self.current_protocol is not None:
-            unit = self.units_by_id[int_uid]
+        unit = self.units_by_id.get(int_uid)
+        if unit is None:
+            unit = next((u for u in self.units if u.unit_id == int_uid), None)
+
+        if unit is not None and self.current_protocol is not None:
             pulse_onsets = self.current_protocol.onsets
             psth_data = compute_psth_and_raster(
                 unit.spike_times,
@@ -2904,6 +2632,8 @@ class DetectionView(QWidget):
                     self.waveform_panel.setVisible(True)
                 else:
                     wf_arr = np.asarray(unit.waveforms, dtype=np.float64)
+                    if wf_arr.ndim == 2 and wf_arr.shape[0] > 0 and wf_arr.shape[-1] > 0:
+                        wf_arr = wf_arr[np.all(np.isfinite(wf_arr), axis=1)]
                     if (
                         wf_arr.ndim == 2
                         and wf_arr.shape[0] > 0
@@ -2931,62 +2661,11 @@ class DetectionView(QWidget):
                 self.waveform_panel.setVisible(False)
         else:
             self.waveform_panel.setVisible(False)
-            lat_txt = self.table_units.item(row, _COL_LAT).text()
-            rel_txt = self.table_units.item(row, _COL_REL).text()
-            latency = float(lat_txt) if lat_txt not in ("N/A", "—") else 5.0
-            reliability = float(rel_txt)
-
-            np.random.seed(row * 42 + 7)
-            n_trials = 40
-            mock_onsets = np.arange(1.0, 1.0 + n_trials * 0.5, 0.5)
-            mock_spikes_list: List[float] = []
-            for t_pulse in mock_onsets:
-                n_bg = np.random.poisson(2)
-                for t in t_pulse + np.random.uniform(-0.1, 0.1, n_bg):
-                    mock_spikes_list.append(t)
-                if np.random.rand() < reliability:
-                    mock_spikes_list.append(t_pulse + float(np.random.normal(latency / 1000.0, 0.0012)))
-
-            mock_spikes = np.sort(np.array(mock_spikes_list))
-            psth_data = compute_psth_and_raster(
-                mock_spikes,
-                mock_onsets,
-                window_ms=self.current_window_ms,
-                order_by=self.raster_order_by,
-                smooth=self.psth_smooth,
-                gaussian_sigma_ms=self.psth_gaussian_sigma_ms,
-            )
-
-            pulse_dur_ms = self._get_current_pulse_duration_ms()
-            render_raster(
-                self.raster_plot,
-                raster_x=psth_data["raster_x"],
-                raster_y=psth_data["raster_y"],
-                n_trials=n_trials,
-                title=None,
-                x_range=self.current_window_ms,
-                order_by=self.raster_order_by,
-                show_x_axis=False,
-                marker_size=self.raster_marker_size,
-                y_axis_width=DETECTION_PLOT_LEFT_MARGIN,
-                pulse_duration_ms=pulse_dur_ms,
-                y_label=raster_y_label,
-            )
-            render_psth(
-                self.psth_plot,
-                psth_bins=psth_data["psth_bins"],
-                psth_rates=psth_data["psth_rates"],
-                baseline_mean=0.0,
-                baseline_3sigma=0.0,
-                title=None,
-                x_range=self.current_window_ms,
-                show_x_axis=True,
-                y_axis_width=DETECTION_PLOT_LEFT_MARGIN,
-                is_smooth=self.psth_smooth,
-                pulse_duration_ms=pulse_dur_ms,
-                x_label="Time from pulse onset (ms)",
-                y_label="Rate (Hz)",
-            )
+            self.raster_plot.clear()
+            self.psth_plot.clear()
+            self.raster_plot.setXRange(self.current_window_ms[0], self.current_window_ms[1], padding=0.0)
+            self.raster_plot.getViewBox().disableAutoRange(pg.ViewBox.XAxis)
+            return
 
         self.raster_plot.setXRange(self.current_window_ms[0], self.current_window_ms[1], padding=0.0)
         self.raster_plot.getViewBox().disableAutoRange(pg.ViewBox.XAxis)
@@ -3012,6 +2691,16 @@ class DetectionView(QWidget):
         precompute_pngs: bool = False,
     ) -> Optional[Path]:
         """Export current session curation metadata to <session_id>_opto_curated.csv and cached spike arrays."""
+        if not self.units:
+            if show_dialog:
+                QMessageBox.warning(
+                    self,
+                    "No Units to Export",
+                    "No spike-sorted units are currently loaded in the Detection workspace.\n\n"
+                    "Please load an experiment folder or NWB file before saving.",
+                )
+            return None
+
         if export_dir is None or isinstance(export_dir, bool):
             if self.current_folder is not None:
                 export_dir = self.current_folder
@@ -3046,131 +2735,76 @@ class DetectionView(QWidget):
         try:
             rows: List[Dict[str, Any]] = []
 
-            if self.units:
-                for u in self.units:
-                    m = self.metrics.get(u.unit_id)
-                    if not m:
-                        continue
-                    plot_rel = f"{self.session_id}_plots/{m.global_id}_psth_raster.png"
-                    rows.append({
-                        "global_unit_id": m.global_id,
-                        "session_id": m.session_id,
-                        "unit_id": m.unit_id,
-                        "latency_ms": round(m.latency_ms, 3) if m.latency_ms < 500.0 else np.nan,
-                        "jitter_ms": round(m.jitter_ms, 3) if m.jitter_ms < 500.0 else np.nan,
-                        "reliability": round(m.reliability, 4),
-                        "waveform_correlation": round(m.waveform_correlation, 4),
-                        "salt_p_value": round(m.salt_p_value, 5),
-                        "is_tagged": m.is_tagged,
-                        "cluster_id": m.cluster_id,
-                        "curated_label": m.curated_label,
-                        "channel": int(getattr(u, "channel", 0)),
-                        "depth": float(getattr(u, "depth", 0.0)),
-                        "probe_x": float(getattr(u, "probe_x", 0.0)),
-                        "plot_path": plot_rel,
-                    })
+            for u in self.units:
+                m = self.metrics.get(u.unit_id)
+                if not m:
+                    continue
+                plot_rel = f"{self.session_id}_plots/{m.global_id}_psth_raster.png"
+                rows.append({
+                    "global_unit_id": m.global_id,
+                    "session_id": m.session_id,
+                    "unit_id": m.unit_id,
+                    "latency_ms": round(m.latency_ms, 3) if is_valid_metric_value(m.latency_ms) else np.nan,
+                    "jitter_ms": round(m.jitter_ms, 3) if is_valid_metric_value(m.jitter_ms) else np.nan,
+                    "reliability": round(m.reliability, 4),
+                    "waveform_correlation": round(m.waveform_correlation, 4),
+                    "salt_p_value": round(m.salt_p_value, 5),
+                    "is_tagged": m.is_tagged,
+                    "cluster_id": m.cluster_id,
+                    "curated_label": m.curated_label,
+                    "channel": int(getattr(u, "channel", 0)),
+                    "depth": float(getattr(u, "depth", 0.0)),
+                    "probe_x": float(getattr(u, "probe_x", 0.0)),
+                    "plot_path": plot_rel,
+                })
 
-                if precompute_pngs and self.current_protocol:
-                    batch_precompute_plots(
-                        units=self.units,
-                        stimulus=self.current_protocol,
-                        output_dir=plots_dir,
-                        only_tagged=only_tagged_plots,
-                        metrics_map=self.metrics,
-                    )
-
-                spikes_export: Dict[str, Any] = {}
-                for u in self.units:
-                    m = self.metrics.get(u.unit_id)
-                    if m and m.is_tagged and u.spike_times is not None:
-                        spikes_export[f"unit_{u.unit_id}"] = u.spike_times
-
-                if self.current_protocol:
-                    if hasattr(self.current_protocol, "onsets") and self.current_protocol.onsets is not None:
-                        spikes_export["pulse_onsets"] = self.current_protocol.onsets
-                    elif hasattr(self.current_protocol, "pulse_times") and self.current_protocol.pulse_times is not None:
-                        spikes_export["pulse_onsets"] = self.current_protocol.pulse_times
-                    if hasattr(self.current_protocol, "offsets") and self.current_protocol.offsets is not None:
-                        spikes_export["pulse_offsets"] = self.current_protocol.offsets
-
-                if hasattr(self, "current_folder") and self.current_folder:
-                    cp_path = Path(self.current_folder) / "channel_positions.npy"
-                    if not cp_path.exists() and Path(self.current_folder).parent != Path(self.current_folder):
-                        parent_cp = Path(self.current_folder).parent / "channel_positions.npy"
-                        if parent_cp.exists():
-                            cp_path = parent_cp
-                    if cp_path.exists():
-                        try:
-                            spikes_export["channel_positions"] = np.load(cp_path)
-                        except Exception:
-                            pass
-                if "channel_positions" not in spikes_export and getattr(self, "channel_positions", None) is not None:
-                    spikes_export["channel_positions"] = np.asarray(self.channel_positions)
-
-                if spikes_export:
-                    np.savez_compressed(arrays_dir / f"{self.session_id}_spikes.npz", **spikes_export)
-                    np.savez_compressed(export_dir / f"{self.session_id}_spikes.npz", **spikes_export)
-            else:
-                for row in range(self.table_units.rowCount()):
-                    int_uid = self._row_unit_id(row)
-                    lat_txt = self.table_units.item(row, _COL_LAT).text()
-                    lat = float(lat_txt) if lat_txt not in ("N/A", "—") else 999.0
-                    jit_txt = self.table_units.item(row, _COL_JIT).text()
-                    jit = float(jit_txt) if jit_txt not in ("N/A", "—") else 1.5
-                    rel = float(self.table_units.item(row, _COL_REL).text())
-                    salt_item = self.table_units.item(row, _COL_SALT)
-                    salt_p = float(salt_item.sort_key) if isinstance(salt_item, NumericTableWidgetItem) else 1.0
-                    is_tagged = self._is_row_tagged(row)
-
-                    global_id = f"{self.session_id}_u{int_uid:04d}"
-                    plot_rel = f"{self.session_id}_plots/{global_id}_psth_raster.png"
-                    channel = int_uid % 32
-                    depth = float(100.0 + (int_uid % 32) * 50.0)
-                    probe_x = float(16.0 if (int_uid % 2 == 0) else 48.0)
-                    rows.append({
-                        "global_unit_id": global_id,
-                        "session_id": self.session_id,
-                        "unit_id": int_uid,
-                        "latency_ms": lat,
-                        "jitter_ms": jit,
-                        "reliability": rel,
-                        "waveform_correlation": 0.95,
-                        "salt_p_value": salt_p,
-                        "is_tagged": is_tagged,
-                        "cluster_id": -1,
-                        "curated_label": "unassigned",
-                        "channel": channel,
-                        "depth": depth,
-                        "probe_x": probe_x,
-                        "plot_path": plot_rel,
-                    })
-
-                mock_onsets = np.arange(1.0, 1.0 + 40 * 0.5, 0.5)
-                mock_probe_positions = np.array(
-                    [[16.0 if i % 2 == 0 else 48.0, 100.0 + (i % 32) * 50.0] for i in range(32)],
-                    dtype=np.float64,
+            if precompute_pngs and self.current_protocol:
+                batch_precompute_plots(
+                    units=self.units,
+                    stimulus=self.current_protocol,
+                    output_dir=plots_dir,
+                    only_tagged=only_tagged_plots,
+                    metrics_map=self.metrics,
                 )
-                mock_spikes_export: Dict[str, Any] = {
-                    "pulse_onsets": mock_onsets,
-                    "channel_positions": mock_probe_positions,
-                }
-                for row_data in rows:
-                    if row_data["is_tagged"]:
-                        uid = row_data["unit_id"]
-                        lat = row_data["latency_ms"]
-                        rel = row_data["reliability"]
-                        np.random.seed(uid * 42 + 7)
-                        spikes_list = []
-                        for t_pulse in mock_onsets:
-                            n_bg = np.random.poisson(2)
-                            for t in t_pulse + np.random.uniform(-0.1, 0.1, n_bg):
-                                spikes_list.append(t)
-                            if np.random.rand() < rel:
-                                spikes_list.append(t_pulse + float(np.random.normal(lat / 1000.0, 0.0012)))
-                        mock_spikes_export[f"unit_{uid}"] = np.sort(np.array(spikes_list))
-                if len(mock_spikes_export) > 1:
-                    np.savez_compressed(arrays_dir / f"{self.session_id}_spikes.npz", **mock_spikes_export)
-                    np.savez_compressed(export_dir / f"{self.session_id}_spikes.npz", **mock_spikes_export)
+
+            spikes_export: Dict[str, Any] = {}
+            for u in self.units:
+                m = self.metrics.get(u.unit_id)
+                if m and m.is_tagged and u.spike_times is not None:
+                    spikes_export[f"unit_{u.unit_id}"] = u.spike_times
+
+            if self.current_protocol:
+                if hasattr(self.current_protocol, "onsets") and self.current_protocol.onsets is not None:
+                    spikes_export["pulse_onsets"] = self.current_protocol.onsets
+                elif hasattr(self.current_protocol, "pulse_times") and self.current_protocol.pulse_times is not None:
+                    spikes_export["pulse_onsets"] = self.current_protocol.pulse_times
+                if hasattr(self.current_protocol, "offsets") and self.current_protocol.offsets is not None:
+                    spikes_export["pulse_offsets"] = self.current_protocol.offsets
+                proto_name = str(getattr(self.current_protocol, "name", "") or "").strip()
+                if proto_name:
+                    spikes_export["protocol_name"] = np.array(proto_name)
+
+            if hasattr(self, "current_folder") and self.current_folder:
+                cp_path = Path(self.current_folder) / "channel_positions.npy"
+                if not cp_path.exists() and Path(self.current_folder).parent != Path(self.current_folder):
+                    parent_cp = Path(self.current_folder).parent / "channel_positions.npy"
+                    if parent_cp.exists():
+                        cp_path = parent_cp
+                if cp_path.exists():
+                    try:
+                        spikes_export["channel_positions"] = np.load(cp_path)
+                    except Exception:
+                        pass
+            if "channel_positions" not in spikes_export:
+                chan_pos = getattr(self, "_channel_positions", None)
+                if chan_pos is None:
+                    chan_pos = getattr(self, "channel_positions", None)
+                if chan_pos is not None:
+                    spikes_export["channel_positions"] = np.asarray(chan_pos)
+
+            if spikes_export:
+                np.savez_compressed(arrays_dir / f"{self.session_id}_spikes.npz", **spikes_export)
+                np.savez_compressed(export_dir / f"{self.session_id}_spikes.npz", **spikes_export)
 
             df = pd.DataFrame(rows)
             df.to_csv(csv_path, index=False)
@@ -3202,7 +2836,7 @@ class DetectionView(QWidget):
             self.lbl_session.setText(f"Session: {self.session_id}")
 
         rng = np.random.default_rng(20261021)
-        sr = 30000.0
+        sr = DEFAULT_SAMPLING_RATE_HZ
         n_pulses = 30
         onsets = np.arange(1.0, 1.0 + n_pulses * 0.5, 0.5)
         offsets = onsets + 0.020
@@ -3284,7 +2918,7 @@ class DetectionView(QWidget):
 
         self.units = units
         self.units_by_id = {u.unit_id: u for u in units}
-        self.channel_positions = np.array(
+        self._channel_positions = np.array(
             [[16.0 if (i % 2 == 0) else 32.0, 100.0 + i * 20.0] for i in range(12)],
             dtype=np.float64,
         )

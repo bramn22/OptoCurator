@@ -5,7 +5,7 @@ import math
 from typing import Dict, Mapping, Optional, Sequence
 import numpy as np
 
-from optocurator.models import UnitMetrics
+from optocurator.models import UnitMetrics, is_valid_metric_value
 
 _LOG_EPS = 1e-6
 _METRIC_FIELDS = frozenset(
@@ -37,7 +37,12 @@ def _get_metric_value(metrics: UnitMetrics, name: str) -> Optional[float]:
     val = getattr(metrics, name, None)
     if val is None:
         return None
-    return float(val)
+    f = float(val)
+    if not math.isfinite(f):
+        return None
+    if name in ("latency_ms", "jitter_ms") and not is_valid_metric_value(f):
+        return None
+    return f
 
 
 def _transform_value(val: float, is_log: bool) -> float:

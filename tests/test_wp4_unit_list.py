@@ -112,10 +112,15 @@ def test_wp4_show_dropdown_order_swatches_counts_scrolling_and_filtering(qapp):
     view.close()
 
 
-def test_wp4_table_columns_formatting_salt_floor_status_and_focus_highlight(qapp):
+def test_wp4_table_columns_formatting_salt_floor_status_and_focus_highlight(qapp, qtbot):
     """Table has 7 exact WP4 columns, short session + tooltip, SALT floor, icon-only status, and focused highlight."""
     view = _make_view()
     qapp.processEvents()
+    qtbot.waitUntil(
+        lambda: (view._active_learning_worker is None or not view._active_learning_worker.isRunning())
+        and view.active_candidate is not None,
+        timeout=10000,
+    )
 
     tbl = view.table_pooled_units
     headers = [tbl.horizontalHeaderItem(c).text() for c in range(tbl.columnCount())]

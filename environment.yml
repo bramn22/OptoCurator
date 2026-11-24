@@ -21,3 +21,4 @@ dependencies:
     - quantities>=0.14
     - pytest>=7.0.0
     - hatchling>=1.18.0
+    # Optional UMAP 2D embedding backend: pip install ".[umap]" (umap-learn>=0.5)

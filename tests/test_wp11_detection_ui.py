@@ -205,18 +205,6 @@ def test_wp11_likelihood_wiring_live_updates_and_next_likely(qapp) -> None:
             if not view.table_units.isRowHidden(r)
         ]
         assert set(visible_uids) == set(expected_likely)
-
-        # btn_next_likely cycles through high-likelihood untagged units in descending likelihood order
-        assert view.btn_next_likely.isEnabled() is True
-        assert f"({len(expected_likely)})" in view.btn_next_likely.text()
-        visited: List[int] = []
-        for _ in range(len(expected_likely) + 1):
-            view.btn_next_likely.click()
-            assert view._focused_unit_id is not None
-            visited.append(view._focused_unit_id)
-
-        assert visited[: len(expected_likely)] == expected_likely
-        assert visited[len(expected_likely)] == expected_likely[0]
     finally:
         view.close()
 

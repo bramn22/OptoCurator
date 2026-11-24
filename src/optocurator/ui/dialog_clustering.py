@@ -39,7 +39,7 @@ from optocurator.ui.theme import (
 
 
 class HierarchicalClusteringDialog(QDialog):
-    """Modal dialog allowing researchers to configure and run response clustering on pooled units."""
+    """Modal dialog to configure and run Agglomerative Hierarchical, K-Means, or GMM response clustering."""
 
     def __init__(
         self,
@@ -388,10 +388,6 @@ class HierarchicalClusteringDialog(QDialog):
         return self.feature_config
 
 
-# Backward compatibility alias
-ClusteringDialog = HierarchicalClusteringDialog
-
-
 class EmbeddingSettingsDialog(QDialog):
     """Modal dialog allowing users to configure 2D dimensionality reduction (PCA or UMAP)."""
 
@@ -462,17 +458,6 @@ class EmbeddingSettingsDialog(QDialog):
         self.combo_method.addItem("Uniform Manifold Approximation and Projection (UMAP)", "UMAP")
         self.combo_method.currentIndexChanged.connect(self._on_method_changed)
         form_method.addRow("Method:", self.combo_method)
-
-        self.combo_scaling = QComboBox()
-        self.combo_scaling.addItem("Standardized (z-score)", "zscore")
-        self.combo_scaling.setToolTip("Features are standardized (zero mean, unit variance) before projection.")
-        form_method.addRow("Feature Scaling:", self.combo_scaling)
-
-        self.combo_color_by = QComboBox()
-        self.combo_color_by.addItem("Cluster", "cluster")
-        self.combo_color_by.addItem("Status", "status")
-        self.combo_color_by.addItem("Session", "session")
-        form_method.addRow("Colour Points By:", self.combo_color_by)
 
         layout_embed.addLayout(form_method)
 

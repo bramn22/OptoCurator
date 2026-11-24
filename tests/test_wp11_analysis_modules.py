@@ -47,6 +47,30 @@ def test_split_evoked_and_spontaneous_spikes_and_fallback():
     np.testing.assert_array_equal(sp2, [0, 1, 3, 5])
 
 
+def test_split_evoked_and_spontaneous_spikes_half_open_window():
+    """waveform.py must match metrics.py [start, end) half-open window convention (Bug M5)."""
+    from optocurator.analysis.metrics import compute_first_spike_latency, compute_response_reliability
+
+    onsets = np.array([1.000])
+    # 0.950 (-50 ms, base start included), 0.995 (-5 ms, base end excluded),
+    # 1.000 (0 ms, evoked start included), 1.020 (+20 ms, evoked end excluded)
+    spikes = np.array([0.950, 0.995, 1.000, 1.020])
+    ev, sp = split_evoked_and_spontaneous_spikes(
+        spikes, onsets, evoked_window_ms=(0.0, 20.0), baseline_window_ms=(-50.0, -5.0)
+    )
+    np.testing.assert_array_equal(ev, [2])
+    np.testing.assert_array_equal(sp, [0])
+
+    # Consistency with metrics.py [start, end) boundary behavior at +20.0 ms
+    edge_only = np.array([1.020])
+    ev_edge, _ = split_evoked_and_spontaneous_spikes(
+        edge_only, onsets, evoked_window_ms=(0.0, 20.0), baseline_window_ms=(-50.0, -5.0)
+    )
+    assert len(ev_edge) == 0
+    assert compute_response_reliability(edge_only, onsets, eval_window_ms=(0.0, 20.0)) == 0.0
+    assert np.isnan(compute_first_spike_latency(edge_only, onsets, eval_window_ms=(0.0, 20.0)))
+
+
 def test_subsample_indices_deterministic():
     """Verify deterministic evenly-spaced subsampling."""
     idx = np.arange(100, dtype=np.int64)
@@ -152,6 +176,71 @@ def test_extract_session_waveforms_from_synthetic_dat(tmp_path: Path):
     assert unit_missing.waveforms is None
 
 
+def test_extract_session_waveforms_excludes_clipped_and_unextracted_rows(tmp_path: Path):
+    """Boundary-clipped and unextracted spikes must be NaN and excluded from snippets (Bug M3)."""
+    fs = 10000.0
+    n_channels = 2
+    n_samples = int(fs * 2.0)
+
+    t_wf = np.linspace(-1.0, 1.0, 30)
+    ap_template = (-500.0 * np.exp(-(t_wf**2) / 0.12)).astype(np.int16)
+
+    # Pulse 0 near t=0 -> evoked spike at 0.0002 s (sample 2) is clipped (start = 2 - 10 = -8 < 0)
+    # Pulse 1 at 1.0 s -> valid spontaneous at 0.970 s, valid evoked at 1.005 s, valid evoked at 1.008 s
+    onsets = np.array([0.0001, 1.0000])
+    spikes = np.array([0.0002, 0.9700, 1.0050, 1.0080])
+
+    data = np.zeros((n_samples, n_channels), dtype=np.int16)
+    peak_ch = 1
+    for spk in spikes[1:]:
+        center = int(round(spk * fs))
+        data[center - 10 : center + 20, peak_ch] = ap_template
+
+    dat_path = tmp_path / "clipped.dat"
+    data.tofile(dat_path)
+    (tmp_path / "params.py").write_text(
+        "dat_path = 'clipped.dat'\nn_channels_dat = 2\ndtype = 'int16'\nsample_rate = 10000.0\n",
+        encoding="utf-8",
+    )
+
+    unit = UnitData(
+        session_id="sess_clip",
+        unit_id=1,
+        spike_times=spikes,
+        sampling_rate=fs,
+        channel=peak_ch,
+        waveforms=None,
+    )
+    sp = StatsParameters(wf_window_start_ms=-1.0, wf_window_end_ms=2.0, wf_max_spikes=2)
+    extract_session_waveforms(tmp_path, [unit], onsets, stats_params=sp)
+
+    assert unit.waveforms is not None
+    # Row 0 (clipped at sample 2) and row 2 (skipped by max_spikes=2 subsampling of [0, 2, 3] -> [0, 3]) must be NaN
+    assert np.all(np.isnan(unit.waveforms[0]))
+    assert np.all(np.isnan(unit.waveforms[2]))
+
+    # Extracting snippets up to 40 must exclude both NaN rows, keeping only the 1 valid finite evoked spike (row 3)
+    snippets = extract_evoked_and_spontaneous_snippets(
+        unit.waveforms, unit.spike_times, onsets, max_spikes_per_group=40
+    )
+    assert snippets is not None
+    ev_s, sp_s = snippets
+    assert ev_s.shape == (1, 30)
+    assert sp_s.shape == (1, 30)
+    assert np.all(np.isfinite(ev_s))
+    np.testing.assert_allclose(ev_s[0], ap_template.astype(np.float64), atol=1e-4)
+
+    # When only non-finite evoked rows remain, return None
+    wf_only_bad_ev = unit.waveforms.copy()
+    wf_only_bad_ev[3, :] = np.nan
+    assert (
+        extract_evoked_and_spontaneous_snippets(
+            wf_only_bad_ev, unit.spike_times, onsets, max_spikes_per_group=40
+        )
+        is None
+    )
+
+
 def test_missing_waveforms_do_not_block_tagging():
     """Decision 1: units without waveforms get NaN WF r and can still be tagged."""
     onsets = np.array([1.0, 2.0, 3.0, 4.0, 5.0])
@@ -230,3 +319,25 @@ def test_likelihood_boundary_monotonicity_and_missing_wf():
     # Disabled criteria -> 0.0
     disabled = [CriterionSpec("latency_ms", threshold=8.0, direction="le", enabled=False)]
     assert compute_unit_likelihood(u_strong, disabled, {"latency_ms": 1.0}) == 0.0
+
+
+def test_likelihood_excludes_999_sentinel_units():
+    """Verify silent 999.0 ms sentinel units do not inflate MAD/std spread or receive non-zero likelihood (Bug M1)."""
+    criteria = [CriterionSpec("latency_ms", threshold=8.0, direction="le")]
+    units = [
+        _make_metrics("s1_u0001", lat=4.0, jit=0.8, rel=0.9, wf_r=0.95, salt_p=0.001),
+        _make_metrics("s1_u0002", lat=6.0, jit=1.0, rel=0.8, wf_r=0.95, salt_p=0.005),
+        _make_metrics("s1_u0003", lat=20.0, jit=2.0, rel=0.4, wf_r=0.85, salt_p=0.10),
+    ] + [
+        _make_metrics(f"s1_u{i:04d}", lat=999.0, jit=999.0, rel=0.0, wf_r=float("nan"), salt_p=1.0)
+        for i in range(4, 11)
+    ]
+
+    spreads = compute_population_spreads(units, criteria)
+    assert spreads["latency_ms"] < 10.0
+
+    scores = compute_session_likelihoods(units, criteria)
+    assert scores["s1_u0001"] > 0.95
+    assert scores["s1_u0003"] < 1e-4
+    for i in range(4, 11):
+        assert scores[f"s1_u{i:04d}"] == 0.0

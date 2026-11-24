@@ -31,9 +31,10 @@ Optional:
 
 - **Phy / Kilosort session directory:**
   - Standard spike-sorting outputs (`spike_times.npy`, `spike_clusters.npy`, `spike_templates.npy`, `templates.npy`, `cluster_info.tsv`, `channel_positions.npy`, `channel_map.npy`, `params.py`).
-  - **Important**: Optogenetic stimulation timestamps. The timestamps file must be named `opto_idxs_<protocol_name>.npy` or `opto_idxs_<protocol_name>.mat`. The timestamps file must contain a 2D array (N x 2) with pulse onsets (first column) and pulse offsets (second column). These need to be expressed in sample indices (same as `spike_times.npy`).
+  - `spike_times.npy`: 1D numeric array. Integer arrays (`int*`/`uint*`) are interpreted as sample indices and divided by `sample_rate` from `params.py` (default `30000.0` Hz); floating-point arrays (`float32`/`float64`) are read directly as seconds.
+  - **Optogenetic stimulation timestamps:** Files matching `*opto*.npy`/`.mat`, `*pulse*.npy`/`.mat`, or `*stim*.npy`/`.mat` (typically `opto_idxs_<protocol_name>.npy` or `.mat`). Supported array shapes are `(N, 2)` (columns `[onset, offset]`) or 1D `(N,)` onsets (default 10 ms pulse duration). Integer arrays are interpreted as sample indices divided by `sample_rate`; floating-point arrays are read directly as seconds.
 - **Neurodata Without Borders (`.nwb`) file:**
-  - Sorted units and optogenetic stimulus presentation/interval tables are read out via `h5py`, supporting multi-probe sessions and multiple stimulation protocols.
+  - Sorted units and optogenetic stimulus presentation/interval tables are read out via `h5py` in seconds, supporting multi-probe sessions and multiple stimulation protocols.
 
 ---
 

@@ -3,12 +3,41 @@
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 import numpy as np
 
-from optocurator.analysis.salt import (
-    compute_salt_p_value,
-    compute_salt_p_values_parallel,
-)
+from optocurator.analysis.salt import compute_salt_p_values_parallel
 from optocurator.analysis.waveform import compute_unit_waveform_correlation
-from optocurator.models import StatsParameters, StimulusProtocol, UnitData, UnitMetrics
+from optocurator.models import (
+    MISSING_METRIC_SENTINEL,
+    StatsParameters,
+    StimulusProtocol,
+    UnitData,
+    UnitMetrics,
+)
+
+
+def _first_spike_latencies_ms(
+    spike_times: np.ndarray,
+    pulse_onsets: np.ndarray,
+    eval_window_ms: Tuple[float, float] = (0.0, 20.0),
+    max_trials: Optional[int] = None,
+) -> Tuple[np.ndarray, int]:
+    """Return first-spike latencies in ms for trials with spikes in [start, end) and evaluated trial count."""
+    if max_trials is not None and max_trials > 0 and max_trials < len(pulse_onsets):
+        pulse_onsets = pulse_onsets[:max_trials]
+
+    n_trials = len(pulse_onsets)
+    if n_trials == 0 or len(spike_times) == 0:
+        return np.empty(0, dtype=np.float64), n_trials
+
+    w_start_s = eval_window_ms[0] / 1000.0
+    w_end_s = eval_window_ms[1] / 1000.0
+    idx_starts = np.searchsorted(spike_times, pulse_onsets + w_start_s, side="left")
+    idx_ends = np.searchsorted(spike_times, pulse_onsets + w_end_s, side="left")
+    has_spike = idx_ends > idx_starts
+    if not np.any(has_spike):
+        return np.empty(0, dtype=np.float64), n_trials
+
+    latencies = (spike_times[idx_starts[has_spike]] - pulse_onsets[has_spike]) * 1000.0
+    return np.asarray(latencies, dtype=np.float64), n_trials
 
 
 def compute_response_reliability(
@@ -17,33 +46,11 @@ def compute_response_reliability(
     eval_window_ms: Tuple[float, float] = (0.0, 20.0),
     max_trials: Optional[int] = None,
 ) -> float:
-    """Compute evoked response probability [0.0, 1.0] across stimulus pulses.
-
-    Args:
-        spike_times: 1D array of sorted spike timestamps in seconds.
-        pulse_onsets: 1D array of pulse start times in seconds.
-        eval_window_ms: (start_ms, end_ms) post-stimulus interval in ms.
-        max_trials: Optional maximum number of pulses to evaluate.
-
-    Returns:
-        Fraction of evaluated pulses eliciting at least one spike in the window.
-    """
-    if max_trials is not None and max_trials > 0 and max_trials < len(pulse_onsets):
-        pulse_onsets = pulse_onsets[:max_trials]
-
-    n_trials = len(pulse_onsets)
-    if n_trials == 0 or len(spike_times) == 0:
+    """Compute evoked response probability [0.0, 1.0] across stimulus pulses."""
+    latencies, n_trials = _first_spike_latencies_ms(spike_times, pulse_onsets, eval_window_ms, max_trials)
+    if n_trials == 0:
         return 0.0
-
-    w_start_s = eval_window_ms[0] / 1000.0
-    w_end_s = eval_window_ms[1] / 1000.0
-    starts = pulse_onsets + w_start_s
-    ends = pulse_onsets + w_end_s
-
-    idx_starts = np.searchsorted(spike_times, starts)
-    idx_ends = np.searchsorted(spike_times, ends)
-    has_spike = idx_ends > idx_starts
-    return float(np.mean(has_spike))
+    return float(len(latencies) / n_trials)
 
 
 def compute_first_spike_latency(
@@ -52,42 +59,9 @@ def compute_first_spike_latency(
     eval_window_ms: Tuple[float, float] = (0.0, 20.0),
     max_trials: Optional[int] = None,
 ) -> float:
-    """Compute median first-spike latency in milliseconds across evoked pulses.
-
-    Args:
-        spike_times: 1D array of sorted spike timestamps in seconds.
-        pulse_onsets: 1D array of pulse start times in seconds.
-        eval_window_ms: (start_ms, end_ms) post-stimulus interval in ms.
-        max_trials: Optional maximum number of pulses to evaluate.
-
-    Returns:
-        Median first-spike latency in ms, or np.nan if no evoked spikes.
-    """
-    if max_trials is not None and max_trials > 0 and max_trials < len(pulse_onsets):
-        pulse_onsets = pulse_onsets[:max_trials]
-
-    n_trials = len(pulse_onsets)
-    if n_trials == 0 or len(spike_times) == 0:
-        return np.nan
-
-    w_start_s = eval_window_ms[0] / 1000.0
-    w_end_s = eval_window_ms[1] / 1000.0
-    starts = pulse_onsets + w_start_s
-    ends = pulse_onsets + w_end_s
-
-    idx_starts = np.searchsorted(spike_times, starts)
-    idx_ends = np.searchsorted(spike_times, ends)
-
-    first_latencies: List[float] = []
-    for s_idx, e_idx, t_pulse in zip(idx_starts, idx_ends, pulse_onsets):
-        if e_idx > s_idx:
-            first_spk = spike_times[s_idx]
-            lat_ms = (first_spk - t_pulse) * 1000.0
-            first_latencies.append(lat_ms)
-
-    if len(first_latencies) > 0:
-        return float(np.median(first_latencies))
-    return np.nan
+    """Compute median first-spike latency in milliseconds across evoked pulses."""
+    latencies, _ = _first_spike_latencies_ms(spike_times, pulse_onsets, eval_window_ms, max_trials)
+    return float(np.median(latencies)) if len(latencies) > 0 else np.nan
 
 
 def compute_first_spike_jitter(
@@ -96,42 +70,11 @@ def compute_first_spike_jitter(
     eval_window_ms: Tuple[float, float] = (0.0, 20.0),
     max_trials: Optional[int] = None,
 ) -> float:
-    """Compute first-spike jitter (standard deviation of first latencies in ms).
-
-    Args:
-        spike_times: 1D array of sorted spike timestamps in seconds.
-        pulse_onsets: 1D array of pulse start times in seconds.
-        eval_window_ms: (start_ms, end_ms) post-stimulus interval in ms.
-        max_trials: Optional maximum number of pulses to evaluate.
-
-    Returns:
-        Standard deviation in ms, or np.nan if no evoked spikes, or 0.0 if only 1 spike.
-    """
-    if max_trials is not None and max_trials > 0 and max_trials < len(pulse_onsets):
-        pulse_onsets = pulse_onsets[:max_trials]
-
-    n_trials = len(pulse_onsets)
-    if n_trials == 0 or len(spike_times) == 0:
-        return np.nan
-
-    w_start_s = eval_window_ms[0] / 1000.0
-    w_end_s = eval_window_ms[1] / 1000.0
-    starts = pulse_onsets + w_start_s
-    ends = pulse_onsets + w_end_s
-
-    idx_starts = np.searchsorted(spike_times, starts)
-    idx_ends = np.searchsorted(spike_times, ends)
-
-    first_latencies: List[float] = []
-    for s_idx, e_idx, t_pulse in zip(idx_starts, idx_ends, pulse_onsets):
-        if e_idx > s_idx:
-            first_spk = spike_times[s_idx]
-            lat_ms = (first_spk - t_pulse) * 1000.0
-            first_latencies.append(lat_ms)
-
-    if len(first_latencies) > 1:
-        return float(np.std(first_latencies))
-    elif len(first_latencies) == 1:
+    """Compute first-spike jitter (standard deviation of first latencies in ms)."""
+    latencies, _ = _first_spike_latencies_ms(spike_times, pulse_onsets, eval_window_ms, max_trials)
+    if len(latencies) > 1:
+        return float(np.std(latencies))
+    if len(latencies) == 1:
         return 0.0
     return np.nan
 
@@ -142,55 +85,17 @@ def compute_first_spike_latency_and_jitter(
     eval_window_ms: Tuple[float, float] = (0.0, 20.0),
     max_trials: Optional[int] = None,
 ) -> Tuple[float, float, float]:
-    """Compute first-spike latency, jitter, and response reliability across stimulus pulses.
-
-    Args:
-        spike_times: 1D array of sorted spike timestamps in seconds.
-        pulse_onsets: 1D array of pulse start times in seconds.
-        eval_window_ms: (start_ms, end_ms) post-stimulus window to evaluate (default 0 to 20ms).
-        max_trials: Optional maximum number of pulses/trials on which to evaluate reliability and latency.
-
-    Returns:
-        tuple (latency_ms, jitter_ms, reliability):
-            - latency_ms: Median first-spike latency in milliseconds (np.nan if no trials evoked spikes).
-            - jitter_ms: Standard deviation of first-spike latency across evoked trials in ms.
-            - reliability: Fraction of stimulus pulses eliciting at least one spike in the window [0, 1].
-    """
-    if max_trials is not None and max_trials > 0 and max_trials < len(pulse_onsets):
-        pulse_onsets = pulse_onsets[:max_trials]
-
-    n_trials = len(pulse_onsets)
-    if n_trials == 0 or len(spike_times) == 0:
+    """Compute first-spike latency, jitter, and response reliability across stimulus pulses."""
+    latencies, n_trials = _first_spike_latencies_ms(spike_times, pulse_onsets, eval_window_ms, max_trials)
+    if n_trials == 0:
         return np.nan, np.nan, 0.0
-
-    w_start_s = eval_window_ms[0] / 1000.0
-    w_end_s = eval_window_ms[1] / 1000.0
-
-    starts = pulse_onsets + w_start_s
-    ends = pulse_onsets + w_end_s
-
-    # Binary search for fast spike lookup
-    idx_starts = np.searchsorted(spike_times, starts)
-    idx_ends = np.searchsorted(spike_times, ends)
-
-    has_spike = idx_ends > idx_starts
-    reliability = float(np.mean(has_spike))
-
-    first_latencies: List[float] = []
-    for s_idx, e_idx, t_pulse, had in zip(idx_starts, idx_ends, pulse_onsets, has_spike):
-        if had:
-            first_spk = spike_times[s_idx]
-            lat_ms = (first_spk - t_pulse) * 1000.0
-            first_latencies.append(lat_ms)
-
-    if len(first_latencies) > 0:
-        lat_arr = np.asarray(first_latencies, dtype=np.float64)
-        latency_ms = float(np.median(lat_arr))
-        jitter_ms = float(np.std(lat_arr)) if len(lat_arr) > 1 else 0.0
+    reliability = float(len(latencies) / n_trials)
+    if len(latencies) > 0:
+        latency_ms = float(np.median(latencies))
+        jitter_ms = float(np.std(latencies)) if len(latencies) > 1 else 0.0
     else:
         latency_ms = np.nan
         jitter_ms = np.nan
-
     return latency_ms, jitter_ms, reliability
 
 
@@ -442,6 +347,24 @@ def compute_psth_and_raster(
     }
 
 
+def _has_spike_in_window(
+    spike_times: np.ndarray,
+    pulse_onsets: np.ndarray,
+    eval_window_ms: Tuple[float, float],
+) -> bool:
+    """Return True if at least one spike falls within [start, end) relative to any pulse."""
+    if len(spike_times) == 0 or len(pulse_onsets) == 0:
+        return False
+    win_start_s = eval_window_ms[0] / 1000.0
+    win_end_s = eval_window_ms[1] / 1000.0
+    if win_end_s <= win_start_s:
+        return False
+    spikes = np.sort(spike_times) if len(spike_times) > 1 and np.any(np.diff(spike_times) < 0) else spike_times
+    starts = np.searchsorted(spikes, pulse_onsets + win_start_s, side="left")
+    ends = np.searchsorted(spikes, pulse_onsets + win_end_s, side="left")
+    return bool(np.any(ends > starts))
+
+
 def compute_unit_metrics(
     unit: UnitData,
     stimulus: StimulusProtocol,
@@ -455,100 +378,21 @@ def compute_unit_metrics(
     stats_params: Optional[StatsParameters] = None,
 ) -> UnitMetrics:
     """Compute statistical metrics and optotagged status for a single unit."""
-    max_trials = None
-    salt_eval_win = (0.0, 10.0)
-    salt_base_win = (-50.0, 0.0)
-    salt_bins = 10
-    salt_perms = 100
-    wf_eval_win = eval_window_ms
-    wf_spont_win = (-50.0, -5.0)
-
-    if stats_params is not None:
-        rel = compute_response_reliability(
-            unit.spike_times,
-            stimulus.onsets,
-            eval_window_ms=(stats_params.reliability_window_start_ms, stats_params.reliability_window_end_ms),
-            max_trials=stats_params.reliability_trials,
-        )
-        lat_ms = compute_first_spike_latency(
-            unit.spike_times,
-            stimulus.onsets,
-            eval_window_ms=(stats_params.latency_window_start_ms, stats_params.latency_window_end_ms),
-            max_trials=stats_params.latency_trials,
-        )
-        jit_ms = compute_first_spike_jitter(
-            unit.spike_times,
-            stimulus.onsets,
-            eval_window_ms=(stats_params.jitter_window_start_ms, stats_params.jitter_window_end_ms),
-            max_trials=stats_params.jitter_trials,
-        )
-        salt_eval_win = (stats_params.salt_window_start_ms, stats_params.salt_window_end_ms)
-        salt_base_win = (stats_params.salt_baseline_start_ms, stats_params.salt_baseline_end_ms)
-        salt_bins = stats_params.salt_n_bins
-        salt_perms = stats_params.salt_n_permutations
-        salt_excl_win = stats_params.salt_exclusion_window_ms
-        wf_eval_win = (stats_params.wf_evoked_start_ms, stats_params.wf_evoked_end_ms)
-        wf_spont_win = (stats_params.wf_baseline_start_ms, stats_params.wf_baseline_end_ms)
-    else:
-        lat_ms, jit_ms, rel = compute_first_spike_latency_and_jitter(
-            unit.spike_times, stimulus.onsets, eval_window_ms=eval_window_ms, max_trials=max_trials
-        )
-        salt_eval_win = (0.0, 10.0)
-        salt_base_win = (-50.0, 0.0)
-        salt_bins = 10
-        salt_perms = 100
-        salt_excl_win = None
-        wf_eval_win = eval_window_ms
-        wf_spont_win = (-50.0, -5.0)
-
-    wf_max_spikes = stats_params.wf_max_spikes if stats_params is not None else 40
-    waveform_correlation = compute_unit_waveform_correlation(
-        unit.waveforms,
-        unit.spike_times,
-        stimulus.onsets,
-        eval_window_ms=wf_eval_win,
-        baseline_window_ms=wf_spont_win,
-        max_spikes_per_group=wf_max_spikes,
-    )
-
-    if rel > 0.0 and not np.isnan(lat_ms):
-        salt_p = compute_salt_p_value(
-            unit.spike_times,
-            stimulus.onsets,
-            pulse_offsets=stimulus.offsets,
-            eval_window_ms=salt_eval_win,
-            baseline_window_ms=salt_base_win,
-            exclusion_window_ms=salt_excl_win,
-            n_bins=salt_bins,
-            n_permutations=salt_perms,
-        )
-    else:
-        salt_p = 1.0
-
-    is_tagged = bool(
-        not np.isnan(lat_ms)
-        and (lat_ms <= max_latency_ms)
-        and (rel >= min_reliability)
-        and (np.isnan(jit_ms) or jit_ms <= max_jitter_ms)
-        and ((not np.isfinite(waveform_correlation)) or (waveform_correlation >= min_waveform_r))
-        and (salt_p <= max_salt_p)
-    )
-
-    if not plot_rel_path:
-        plot_rel_path = f"{unit.session_id}_plots/{unit.global_id}_psth_raster.png"
-
-    return UnitMetrics(
-        global_id=unit.global_id,
-        session_id=unit.session_id,
-        unit_id=unit.unit_id,
-        plot_path=plot_rel_path,
-        latency_ms=lat_ms if not np.isnan(lat_ms) else 999.0,
-        jitter_ms=jit_ms if not np.isnan(jit_ms) else 999.0,
-        reliability=rel,
-        waveform_correlation=waveform_correlation,
-        salt_p_value=salt_p,
-        is_tagged=is_tagged,
-    )
+    metrics = compute_session_metrics(
+        [unit],
+        stimulus=stimulus,
+        eval_window_ms=eval_window_ms,
+        max_latency_ms=max_latency_ms,
+        max_jitter_ms=max_jitter_ms,
+        min_reliability=min_reliability,
+        min_waveform_r=min_waveform_r,
+        max_salt_p=max_salt_p,
+        stats_params=stats_params,
+        n_workers=1,
+    )[0]
+    if plot_rel_path:
+        metrics.plot_path = plot_rel_path
+    return metrics
 
 
 def compute_session_metrics(
@@ -652,7 +496,7 @@ def compute_session_metrics(
         )
         preliminary.append((lat_ms, jit_ms, rel, wv_r))
 
-        if rel > 0.0 and not np.isnan(lat_ms):
+        if _has_spike_in_window(u.spike_times, stimulus.onsets, salt_eval_win):
             active_indices.append(idx)
             active_spikes.append(u.spike_times)
 
@@ -669,6 +513,7 @@ def compute_session_metrics(
             n_bins=salt_bins,
             n_permutations=salt_perms,
             n_workers=n_workers,
+            random_states=[42 + int(units[i].unit_id) for i in active_indices],
             progress_callback=progress_callback,
         )
 
@@ -698,8 +543,8 @@ def compute_session_metrics(
                 session_id=u.session_id,
                 unit_id=u.unit_id,
                 plot_path=plot_rel,
-                latency_ms=lat_ms if not np.isnan(lat_ms) else 999.0,
-                jitter_ms=jit_ms if not np.isnan(jit_ms) else 999.0,
+                latency_ms=lat_ms if not np.isnan(lat_ms) else MISSING_METRIC_SENTINEL,
+                jitter_ms=jit_ms if not np.isnan(jit_ms) else MISSING_METRIC_SENTINEL,
                 reliability=rel,
                 waveform_correlation=wv_r,
                 salt_p_value=salt_p,

@@ -7,7 +7,7 @@ the Jensen-Shannon divergence (Information Radius).
 
 from concurrent.futures import ProcessPoolExecutor, as_completed
 import os
-from typing import Any, Callable, List, Optional, Tuple
+from typing import Any, Callable, List, Optional, Sequence, Tuple
 import numpy as np
 
 
@@ -77,7 +77,9 @@ def compute_salt_p_value(
     eval_start_s = eval_window_ms[0] / 1000.0
 
     base_total_dur_s = (baseline_window_ms[1] - baseline_window_ms[0]) / 1000.0
-    m_baseline_intervals = max(1, int(round(base_total_dur_s / eval_dur_s)))
+    if eval_dur_s <= 0.0 or base_total_dur_s <= 0.0:
+        return 1.0
+    m_baseline_intervals = max(1, int(np.floor((base_total_dur_s + 1e-9) / eval_dur_s)))
 
     # Step 1: Extract post-stimulus first-spike latencies
     stim_starts = pulse_onsets + eval_start_s
@@ -98,11 +100,15 @@ def compute_salt_p_value(
 
         # Step 2: Extract baseline first-spike latencies across M baseline intervals (vectorized)
         base_window_start_s = baseline_window_ms[0] / 1000.0
+        base_window_end_s = baseline_window_ms[1] / 1000.0
         baseline_latencies = np.full((m_baseline_intervals, n_trials), eval_dur_s + 1e-4, dtype=np.float64)
 
         for m in range(m_baseline_intervals):
             b_sub_start = pulse_onsets + base_window_start_s + (m * eval_dur_s)
-            b_sub_end = b_sub_start + eval_dur_s
+            b_sub_end = np.maximum(
+                b_sub_start,
+                np.minimum(b_sub_start + eval_dur_s, pulse_onsets + base_window_end_s),
+            )
 
             b_idx_s = np.searchsorted(spike_times, b_sub_start)
             b_idx_e = np.searchsorted(spike_times, b_sub_end)
@@ -117,6 +123,7 @@ def compute_salt_p_value(
 
         stim_latencies = np.full(n_trials, eval_dur_s + 1e-4, dtype=np.float64)
         base_window_start_s = baseline_window_ms[0] / 1000.0
+        base_window_end_s = baseline_window_ms[1] / 1000.0
         baseline_latencies = np.full((m_baseline_intervals, n_trials), eval_dur_s + 1e-4, dtype=np.float64)
 
         has_offsets = pulse_offsets is not None and len(pulse_offsets) == n_trials
@@ -127,7 +134,10 @@ def compute_salt_p_value(
         b_idx_e_all = []
         for m in range(m_baseline_intervals):
             b_sub_start = pulse_onsets + base_window_start_s + (m * eval_dur_s)
-            b_sub_end = b_sub_start + eval_dur_s
+            b_sub_end = np.maximum(
+                b_sub_start,
+                np.minimum(b_sub_start + eval_dur_s, pulse_onsets + base_window_end_s),
+            )
             b_starts_all.append(b_sub_start)
             b_idx_s_all.append(np.searchsorted(spike_times, b_sub_start))
             b_idx_e_all.append(np.searchsorted(spike_times, b_sub_end))
@@ -233,30 +243,17 @@ def _salt_single_unit_worker(args: Tuple[Any, ...]) -> float:
     Returns:
         Computed SALT p-value.
     """
-    if len(args) == 7:
-        (
-            spike_times,
-            pulse_onsets,
-            eval_window_ms,
-            baseline_window_ms,
-            n_bins,
-            n_permutations,
-            random_state,
-        ) = args
-        pulse_offsets = None
-        exclusion_window_ms = None
-    else:
-        (
-            spike_times,
-            pulse_onsets,
-            pulse_offsets,
-            eval_window_ms,
-            baseline_window_ms,
-            exclusion_window_ms,
-            n_bins,
-            n_permutations,
-            random_state,
-        ) = args
+    (
+        spike_times,
+        pulse_onsets,
+        pulse_offsets,
+        eval_window_ms,
+        baseline_window_ms,
+        exclusion_window_ms,
+        n_bins,
+        n_permutations,
+        random_state,
+    ) = args
 
     return compute_salt_p_value(
         spike_times=spike_times,
@@ -282,6 +279,7 @@ def compute_salt_p_values_parallel(
     n_permutations: int = 100,
     n_workers: Optional[int] = None,
     random_state: Optional[int] = 42,
+    random_states: Optional[Sequence[Optional[int]]] = None,
     progress_callback: Optional[Callable[[int, int], None]] = None,
 ) -> List[float]:
     """Compute SALT p-values for multiple spike trains in parallel using multiprocessing.
@@ -296,7 +294,8 @@ def compute_salt_p_values_parallel(
         n_bins: Number of latency bins.
         n_permutations: Number of permutations for null distribution.
         n_workers: Number of worker processes (defaults to available CPU cores).
-        random_state: Base random seed for reproducible permutations.
+        random_state: Base random seed for reproducible permutations (used if random_states is None).
+        random_states: Optional per-unit random seeds matching spike_times_list.
         progress_callback: Optional callback receiving (completed_count, total_count).
 
     Returns:
@@ -305,6 +304,8 @@ def compute_salt_p_values_parallel(
     n_units = len(spike_times_list)
     if n_units == 0:
         return []
+    if random_states is not None and len(random_states) != n_units:
+        raise ValueError(f"random_states length ({len(random_states)}) must match spike_times_list ({n_units})")
 
     # Prepare argument tuples
     tasks = [
@@ -317,7 +318,7 @@ def compute_salt_p_values_parallel(
             exclusion_window_ms,
             n_bins,
             n_permutations,
-            (random_state + idx if random_state is not None else None),
+            (random_states[idx] if random_states is not None else (random_state + idx if random_state is not None else None)),
         )
         for idx, spike_times in enumerate(spike_times_list)
     ]

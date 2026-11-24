@@ -56,12 +56,12 @@ def split_evoked_and_spontaneous_spikes(
 
     for onset in onsets:
         e_lo = int(np.searchsorted(sorted_times, onset + ev_start_s, side="left"))
-        e_hi = int(np.searchsorted(sorted_times, onset + ev_end_s, side="right"))
+        e_hi = int(np.searchsorted(sorted_times, onset + ev_end_s, side="left"))
         if e_hi > e_lo:
             evoked_sorted_mask[e_lo:e_hi] = True
 
         b_lo = int(np.searchsorted(sorted_times, onset + base_start_s, side="left"))
-        b_hi = int(np.searchsorted(sorted_times, onset + base_end_s, side="right"))
+        b_hi = int(np.searchsorted(sorted_times, onset + base_end_s, side="left"))
         if b_hi > b_lo:
             base_sorted_mask[b_lo:b_hi] = True
 
@@ -115,7 +115,13 @@ def extract_evoked_and_spontaneous_snippets(
         return None
 
     if wf.ndim == 3:
-        peak_ch = int(np.argmax(np.ptp(np.mean(wf, axis=0), axis=-1)))
+        with np.errstate(all="ignore"):
+            mean_wf = np.nanmean(wf, axis=0)
+            ptp = np.nanmax(mean_wf, axis=-1) - np.nanmin(mean_wf, axis=-1)
+        if not np.any(np.isfinite(ptp)):
+            return None
+        ptp = np.where(np.isfinite(ptp), ptp, -1.0)
+        peak_ch = int(np.argmax(ptp))
         wf_2d = wf[:, peak_ch, :]
     elif wf.ndim == 2:
         wf_2d = wf
@@ -128,6 +134,9 @@ def extract_evoked_and_spontaneous_snippets(
         evoked_window_ms=evoked_window_ms,
         baseline_window_ms=baseline_window_ms,
     )
+    valid_mask = np.all(np.isfinite(wf_2d), axis=1)
+    evoked_idx = evoked_idx[valid_mask[evoked_idx]]
+    spont_idx = spont_idx[valid_mask[spont_idx]]
     if evoked_idx.size == 0 or spont_idx.size == 0:
         return None
 
@@ -327,7 +336,7 @@ def extract_session_waveforms(
             selected = np.unique(np.concatenate([evoked_sub, spont_sub]))
             peak_ch = int(np.clip(unit.channel, 0, n_channels - 1))
 
-            wf_array = np.zeros((len(unit.spike_times), n_wf_samples), dtype=np.float32)
+            wf_array = np.full((len(unit.spike_times), n_wf_samples), np.nan, dtype=np.float32)
             extracted_any = False
             for idx in selected:
                 center = int(round(float(unit.spike_times[idx]) * unit.sampling_rate))

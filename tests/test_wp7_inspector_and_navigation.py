@@ -92,12 +92,11 @@ def test_wp7_inspector_header_members_alignment_and_close(qapp):
         summary_text = view.lbl_inspector_summary.text()
         assert summary_text.startswith(f"{len(member_gids)} members · mean latency ")
 
-        # 2. Close button present, NO '⋯' overflow menu, suggested_candidates_panel hidden
+        # 2. Close button present, NO '⋯' overflow menu
         assert not view.btn_comp_close.isHidden()
         assert not hasattr(view, "btn_comp_menu")
         header_buttons = view.inspector_header_widget.findChildren(QPushButton)
         assert [b.text() for b in header_buttons] == ["✕"]
-        assert view.suggested_candidates_panel.isHidden()
 
         # 3. First member UnitResponsePlot aligns horizontally with focused unit_response_plot
         view._align_inspector_first_member_raster()
@@ -174,10 +173,15 @@ def test_wp7_clickable_members_highlight_and_removal_on_reassign(qapp):
         view.close()
 
 
-def test_wp7_advance_rules_for_all_sources_and_suggested_unit_return(qapp):
+def test_wp7_advance_rules_for_all_sources_and_suggested_unit_return(qapp, qtbot):
     """Verify §10.2 advance rules for queue, inspector, table_cluster, list_candidates, and G/return_to_active_candidate."""
     view = ClusteringView(load_mock=True, start_with_clusters=True)
     try:
+        qtbot.waitUntil(
+            lambda: view.active_candidate is not None
+            and (view._active_learning_worker is None or not view._active_learning_worker.isRunning()),
+            timeout=10000,
+        )
         # (a) "queue" with active_learning_enabled=True
         view.active_learning_enabled = True
         assert view.return_to_active_candidate() is True
@@ -185,7 +189,12 @@ def test_wp7_advance_rules_for_all_sources_and_suggested_unit_return(qapp):
         first_cand = view.active_candidate.global_unit_id
 
         view.skip_current_candidate()
-        qapp.processEvents()
+        qtbot.waitUntil(
+            lambda: (view._active_learning_worker is None or not view._active_learning_worker.isRunning())
+            and view.active_candidate is not None
+            and view.active_candidate.global_unit_id != first_cand,
+            timeout=10000,
+        )
         assert view._focus_source == "queue"
         assert view.active_candidate is not None
         assert view._current_selected_gid == view.active_candidate.global_unit_id
@@ -194,7 +203,12 @@ def test_wp7_advance_rules_for_all_sources_and_suggested_unit_return(qapp):
         target_cid = view._cluster_card_order[0]
         second_cand = view.active_candidate.global_unit_id
         assert view.assign_candidate_to_cluster(target_cid) is True
-        qapp.processEvents()
+        qtbot.waitUntil(
+            lambda: (view._active_learning_worker is None or not view._active_learning_worker.isRunning())
+            and view.active_candidate is not None
+            and view.active_candidate.global_unit_id != second_cand,
+            timeout=10000,
+        )
         assert view._focus_source == "queue"
         if view.active_candidate is not None:
             assert view._current_selected_gid == view.active_candidate.global_unit_id
@@ -228,6 +242,11 @@ def test_wp7_advance_rules_for_all_sources_and_suggested_unit_return(qapp):
         # Re-enable active learning for remaining checks
         view.active_learning_enabled = True
         view.refresh_active_learning()
+        qtbot.waitUntil(
+            lambda: view.active_candidate is not None
+            and (view._active_learning_worker is None or not view._active_learning_worker.isRunning()),
+            timeout=10000,
+        )
 
         # (b) "inspector" -> advances to next member in open cluster
         insp_cid = _find_cluster_with_min_members(view, min_members=3)
@@ -321,10 +340,15 @@ def test_wp7_advance_rules_for_all_sources_and_suggested_unit_return(qapp):
         view.close()
 
 
-def test_wp7_keyboard_map_no_plus_and_undo_redo_restores_focus(qapp, monkeypatch):
+def test_wp7_keyboard_map_no_plus_and_undo_redo_restores_focus(qapp, qtbot, monkeypatch):
     """Verify WP7 keyboard map (1-9, 0, Q/W/E/R/T, N, Backspace, S/Space, G, Ctrl+Z/Y, Esc, no '+') and Undo/Redo."""
     view = ClusteringView(load_mock=True, start_with_clusters=True)
     try:
+        qtbot.waitUntil(
+            lambda: view.active_candidate is not None
+            and (view._active_learning_worker is None or not view._active_learning_worker.isRunning()),
+            timeout=10000,
+        )
         # Ensure we have clusters mapped to 1-9, 0, Q, W, E, R, T by creating any missing clusters via 'N'
         expected_hotkeys = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "0", "Q", "W", "E", "R", "T"]
         key_map = {
@@ -396,17 +420,33 @@ def test_wp7_keyboard_map_no_plus_and_undo_redo_restores_focus(qapp, monkeypatch
         finally:
             view.active_learning_enabled = prev_al
             view.refresh_active_learning()
+            qtbot.waitUntil(
+                lambda: view.active_candidate is not None
+                and (view._active_learning_worker is None or not view._active_learning_worker.isRunning())
+                and view._current_selected_gid == view.active_candidate.global_unit_id,
+                timeout=10000,
+            )
 
         # S and Space skip current unit
         gid_before_s = view._current_selected_gid
         ev_s = _send_key(view, Qt.Key.Key_S, text="s")
         assert ev_s.isAccepted()
+        qtbot.waitUntil(
+            lambda: (view._active_learning_worker is None or not view._active_learning_worker.isRunning())
+            and view._current_selected_gid != gid_before_s,
+            timeout=10000,
+        )
         assert gid_before_s in view._skipped_gids
         assert view._current_selected_gid != gid_before_s
 
         gid_before_space = view._current_selected_gid
         ev_sp = _send_key(view, Qt.Key.Key_Space, text=" ")
         assert ev_sp.isAccepted()
+        qtbot.waitUntil(
+            lambda: (view._active_learning_worker is None or not view._active_learning_worker.isRunning())
+            and view._current_selected_gid != gid_before_space,
+            timeout=10000,
+        )
         assert gid_before_space in view._skipped_gids
         assert view._current_selected_gid != gid_before_space
 
@@ -554,4 +594,144 @@ def test_list_panel_shift_click_isolation_and_arrow_navigation(qapp):
         assert view._pooled_units_map[cand0]["cluster_id"] == cid
         assert view._pooled_units_map[cand1]["cluster_id"] == cid
     finally:
+        view.close()
+
+
+def test_clustering_undo_covers_clustering_runs_card_reorder_and_marks_dirty(qapp, qtbot):
+    """run_clustering, seed_clusters, move/sort cards must push undo snapshots, undo/redo must mark dirty and sync color service (Bug UI5)."""
+    from optocurator.analysis.clustering import ClusteringParameters
+
+    view = ClusteringView(load_mock=True, start_with_clusters=True)
+    try:
+        qtbot.waitUntil(
+            lambda: view._active_learning_worker is None or not view._active_learning_worker.isRunning(),
+            timeout=10000,
+        )
+        orig_order = list(view._cluster_card_order)
+        assert len(orig_order) >= 2
+        orig_cids = {gid: rec["cluster_id"] for gid, rec in view._pooled_units_map.items()}
+        custom_cid = orig_order[0]
+        view._cluster_colors[custom_cid] = "#ABCDEF"
+        view.cluster_color_service.set_colors(view._cluster_colors)
+        view._set_dirty(False)
+
+        # 1. move_cluster_card must push undo snapshot and be undoable (marking dirty)
+        assert view.move_cluster_card(orig_order[0], orig_order[1]) is True
+        assert list(view._cluster_card_order[:2]) == [orig_order[1], orig_order[0]]
+        view._set_dirty(False)
+        assert view.undo() is True
+        assert list(view._cluster_card_order) == orig_order
+        assert view._is_dirty is True
+
+        # 2. _sort_cluster_cards must push undo snapshot
+        view.move_cluster_card(orig_order[0], orig_order[1])
+        swapped_order = list(view._cluster_card_order)
+        view._sort_cluster_cards("id")
+        assert view.undo() is True
+        assert list(view._cluster_card_order) == swapped_order
+        assert view.undo() is True
+        assert list(view._cluster_card_order) == orig_order
+
+        # 3. run_clustering(preserve_curated=False) must push undo snapshot and sync color service on undo
+        first_gid = next(iter(view._pooled_units_map))
+        view.assign_candidate_to_cluster(orig_order[0], unit_id=first_gid)
+        before_run = {gid: rec["cluster_id"] for gid, rec in view._pooled_units_map.items()}
+        assert view.run_clustering(ClusteringParameters(n_clusters=2, algorithm="hierarchical"), preserve_curated=False) is True
+        view._cluster_colors[custom_cid] = "#112233"
+        view._set_dirty(False)
+        assert view.undo() is True
+        assert {gid: rec["cluster_id"] for gid, rec in view._pooled_units_map.items()} == before_run
+        assert view.cluster_color_service.get_color(custom_cid).upper() == "#ABCDEF"
+        assert view._is_dirty is True
+
+        # 4. seed_clusters_with_affinity_propagation must push undo snapshot
+        before_seed = {gid: rec["cluster_id"] for gid, rec in view._pooled_units_map.items()}
+        assert view.seed_clusters_with_affinity_propagation() is True
+        assert view.undo() is True
+        assert {gid: rec["cluster_id"] for gid, rec in view._pooled_units_map.items()} == before_seed
+    finally:
+        qtbot.waitUntil(
+            lambda: view._active_learning_worker is None or not view._active_learning_worker.isRunning(),
+            timeout=10000,
+        )
+        view.close()
+
+
+def test_ui7_list_panel_new_cluster_multiselection_point_click_source_and_prewarm_resume(qapp, qtbot, monkeypatch):
+    """create_new_cluster_for_candidate honors list_panel multiselection; point clicks reset _focus_source; prewarm resumes on gen mismatch (Bug UI7)."""
+    from PyQt6.QtCore import QItemSelectionModel
+
+    view = ClusteringView(load_mock=True, start_with_clusters=True)
+    try:
+        qtbot.waitUntil(
+            lambda: view._active_learning_worker is None or not view._active_learning_worker.isRunning(),
+            timeout=10000,
+        )
+        cid = view._cluster_card_order[0]
+        other_gids = [
+            g for g, r in view._pooled_units_map.items()
+            if r.get("cluster_id", -1) != cid
+        ]
+        if len(other_gids) >= 3:
+            view.assign_candidate_to_cluster(-1, unit_id=other_gids[:3])
+        qtbot.waitUntil(
+            lambda: view._active_learning_worker is None or not view._active_learning_worker.isRunning(),
+            timeout=10000,
+        )
+        view.set_cluster_comparison(cid)
+        qapp.processEvents()
+        assert view.table_list_panel.rowCount() >= 2
+        cand0 = str(view.table_list_panel.item(0, 0).data(Qt.ItemDataRole.UserRole))
+        cand1 = str(view.table_list_panel.item(1, 0).data(Qt.ItemDataRole.UserRole))
+        assert cand0 != cand1
+
+        # 1. Multi-select two units in table_list_panel and create a new cluster -> both must move
+        sel_list = view.table_list_panel.selectionModel()
+        idx0 = view.table_list_panel.model().index(0, 0)
+        idx1 = view.table_list_panel.model().index(1, 0)
+        sel_list.select(idx0, QItemSelectionModel.SelectionFlag.ClearAndSelect | QItemSelectionModel.SelectionFlag.Rows)
+        sel_list.select(idx1, QItemSelectionModel.SelectionFlag.Select | QItemSelectionModel.SelectionFlag.Rows)
+        view._on_list_panel_cell_clicked(1, 0)
+        qapp.processEvents()
+        assert view._focus_source == "list_candidates"
+
+        new_cid = view.create_new_cluster_for_candidate()
+        assert new_cid >= 0
+        assert view._pooled_units_map[cand0]["cluster_id"] == new_cid
+        assert view._pooled_units_map[cand1]["cluster_id"] == new_cid
+
+        # 2. Clicking scatter point or probe unit must update _focus_source to "queue"
+        class _DummyPoint:
+            def __init__(self, gid: str) -> None:
+                self._gid = gid
+
+            def data(self) -> str:
+                return self._gid
+
+        view._focus_source = "inspector"
+        view._on_scatter_point_clicked(None, [_DummyPoint(cand0)])
+        assert view._focus_source == "queue"
+
+        view._focus_source = "list_candidates"
+        view._on_probe_unit_clicked(None, [_DummyPoint(cand1)])
+        assert view._focus_source == "queue"
+
+        # 3. Stale-generation prewarm batch callback must still kick queued new-generation prewarm items
+        kick_calls = 0
+
+        def _counted_kick() -> None:
+            nonlocal kick_calls
+            kick_calls += 1
+
+        monkeypatch.setattr(view, "_kick_prewarm_data_worker", _counted_kick)
+        view._prewarm_worker_active = True
+        view._prewarm_generation += 1
+        view._prewarm_data_queue = [cand0]
+        view._on_prewarm_batch_ready(view._prewarm_generation - 1, [])
+        assert kick_calls == 1
+    finally:
+        qtbot.waitUntil(
+            lambda: view._active_learning_worker is None or not view._active_learning_worker.isRunning(),
+            timeout=10000,
+        )
         view.close()

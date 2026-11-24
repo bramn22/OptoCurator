@@ -1,7 +1,6 @@
 """I/O routines for Phy/Kilosort, stimulus pulses, and directory validation."""
 
-from optocurator.io.base import BaseSpikeReader, BaseStimulusReader
-from optocurator.io.phy import PhyKilosortReader
+from optocurator.io.phy import PhyKilosortReader, timestamps_to_seconds
 from optocurator.io.project import (
     ClusteringProjectData,
     ExperimentRef,
@@ -22,17 +21,18 @@ from optocurator.io.validation import (
     InvalidPhase1ExportError,
     MissingPhase1ExportError,
     Phase1ExportMetadata,
+    load_phase1_session_arrays,
     validate_phase1_export,
 )
 
 __all__ = [
-    "BaseSpikeReader",
-    "BaseStimulusReader",
     "PhyKilosortReader",
+    "timestamps_to_seconds",
     "MatNpyStimulusReader",
     "MissingPhase1ExportError",
     "InvalidPhase1ExportError",
     "Phase1ExportMetadata",
+    "load_phase1_session_arrays",
     "validate_phase1_export",
     "ClusteringProjectData",
     "ExperimentRef",

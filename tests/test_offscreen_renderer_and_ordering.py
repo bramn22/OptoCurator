@@ -1,69 +1,23 @@
-"""Tests verifying pure software offscreen rendering and suggested count harmonization:
-1. Pure software offscreen rendering using pg.GraphicsScene + pg.GraphicsLayout without native OS windows.
-2. Immediate caching of rendered unit pixmaps without pop-ups.
-3. Canonical dataframe ordering matching current_clustering_result.unit_ids in refresh_active_learning.
-4. Suggested counts computed directly from _all_unit_probabilities at auto_assign_threshold.
-5. Threshold sliderReleased signal wired to update_auto_assignment_threshold.
+"""Tests verifying canonical ordering and suggested count harmonization:
+1. Canonical dataframe ordering matching current_clustering_result.unit_ids in refresh_active_learning.
+2. Suggested counts computed directly from _all_unit_probabilities at auto_assign_threshold.
+3. Threshold sliderReleased signal wired to update_auto_assignment_threshold.
 """
-
-import numpy as np
-import pytest
-import pyqtgraph as pg
-from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QImage, QPainter, QPixmap
 
 from optocurator.ui.view_clusters import ClusteringView
 
 
-def test_pure_software_offscreen_renderer(qapp):
-    """Verify offscreen renderer uses headless pg.GraphicsScene and generates valid QPixmaps."""
-    view = ClusteringView(load_mock=True, start_with_clusters=True)
-
-    # 1. Ensure renderer is lazily initialized
-    view._ensure_offscreen_renderer()
-    assert view._offscreen_scene is not None
-    assert isinstance(view._offscreen_scene, pg.GraphicsScene)
-    assert view._offscreen_layout is not None
-    assert isinstance(view._offscreen_layout, pg.GraphicsLayout)
-    assert view._offscreen_raster_plot is not None
-    assert view._offscreen_psth_plot is not None
-
-    # 2. Render pixmap for a mock unit
-    sample_gid = list(view._pooled_units_map.keys())[0]
-    pix = view._get_or_render_unit_pixmap(sample_gid)
-    assert pix is not None
-    assert isinstance(pix, QPixmap)
-    assert not pix.isNull()
-    assert pix.width() == 480
-    assert pix.height() == 280
-
-    # 3. Verify x- and y-axes generate valid axis line, tick, and text draw specs offscreen
-    dummy_img = QImage(480, 280, QImage.Format.Format_ARGB32)
-    painter = QPainter(dummy_img)
-    try:
-        raster_left_specs = view._offscreen_raster_plot.getAxis("left").generateDrawSpecs(painter)
-        psth_left_specs = view._offscreen_psth_plot.getAxis("left").generateDrawSpecs(painter)
-        psth_bottom_specs = view._offscreen_psth_plot.getAxis("bottom").generateDrawSpecs(painter)
-    finally:
-        painter.end()
-
-    assert raster_left_specs is not None and len(raster_left_specs[1]) > 0 and len(raster_left_specs[2]) > 0
-    assert psth_left_specs is not None and len(psth_left_specs[1]) > 0 and len(psth_left_specs[2]) > 0
-    assert psth_bottom_specs is not None and len(psth_bottom_specs[1]) > 0 and len(psth_bottom_specs[2]) > 0
-
-    # 4. Cache retrieval returns the same pixmap
-    pix_cached = view._get_or_render_unit_pixmap(sample_gid)
-    assert pix_cached is not None
-    assert not pix_cached.isNull()
-
-    view.close()
-
-
-def test_canonical_ordering_and_suggested_counts_harmonization(qapp):
+def test_canonical_ordering_and_suggested_counts_harmonization(qapp, qtbot):
     """Verify refresh_active_learning constructs df using canonical unit_ids ordering."""
     view = ClusteringView(load_mock=True, start_with_clusters=True)
-    view.refresh_active_learning(synchronous=True)
-    qapp.processEvents()
+    with qtbot.waitSignal(view.progress_updated, timeout=10000):
+        view.refresh_active_learning()
+    qtbot.waitUntil(
+        lambda: view._active_learning_worker is not None
+        and not view._active_learning_worker.isRunning()
+        and bool(view._all_unit_probabilities),
+        timeout=10000,
+    )
 
     assert view.current_clustering_result is not None
     assert view.current_clustering_result.unit_ids is not None
@@ -108,17 +62,23 @@ def test_canonical_ordering_and_suggested_counts_harmonization(qapp):
     view.close()
 
 
-def test_slider_threshold_slider_released_connected(qapp):
+def test_slider_threshold_slider_released_connected(qapp, qtbot):
     """Verify slider_threshold.sliderReleased triggers update_auto_assignment_threshold."""
     view = ClusteringView(load_mock=True, start_with_clusters=True)
 
     view.slider_threshold.setValue(90)
     # Trigger sliderReleased
-    view.slider_threshold.sliderReleased.emit()
+    with qtbot.waitSignal(view.progress_updated, timeout=10000):
+        view.slider_threshold.sliderReleased.emit()
     assert view.auto_assign_threshold == 0.90
 
     view.slider_threshold.setValue(70)
-    view.slider_threshold.sliderReleased.emit()
+    with qtbot.waitSignal(view.progress_updated, timeout=10000):
+        view.slider_threshold.sliderReleased.emit()
     assert view.auto_assign_threshold == 0.70
 
+    qtbot.waitUntil(
+        lambda: view._active_learning_worker is not None and not view._active_learning_worker.isRunning(),
+        timeout=10000,
+    )
     view.close()

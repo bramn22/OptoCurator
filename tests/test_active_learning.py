@@ -21,9 +21,31 @@ from optocurator.analysis.clustering import (
 from optocurator.ui.view_clusters import ClusterCardWidget, ClusteringView
 
 
+def _make_spike_data_map(df: pd.DataFrame) -> dict[str, tuple[np.ndarray, np.ndarray]]:
+    """Build deterministic synthetic spike trains matching each row's response profile."""
+    rng = np.random.RandomState(12345)
+    pulses = np.arange(1.0, 21.0, 0.5, dtype=np.float64)
+    spike_map: dict[str, tuple[np.ndarray, np.ndarray]] = {}
+    for _, row in df.iterrows():
+        gid = str(row["global_unit_id"])
+        lat_ms = float(row["latency_ms"])
+        jit_ms = max(0.3, float(row["jitter_ms"]))
+        rel = float(row["reliability"])
+        spikes_list = []
+        for t_p in pulses:
+            n_bg = int(rng.poisson(1))
+            if n_bg > 0:
+                spikes_list.extend((t_p + rng.uniform(-0.08, 0.08, size=n_bg)).tolist())
+            if rng.rand() < rel:
+                spikes_list.append(t_p + max(0.0005, float(rng.normal(lat_ms / 1000.0, jit_ms / 1000.0))))
+        spike_map[gid] = (np.sort(np.asarray(spikes_list, dtype=np.float64)), pulses)
+    return spike_map
+
+
 @pytest.fixture
 def sample_pooled_df() -> pd.DataFrame:
     """Create synthetic pooled dataset with two well-separated groups and ambiguous boundary units."""
+    rng = np.random.RandomState(42)
     rows = []
     # Cluster 0: Fast-spiking, short latency (lat: 2-4 ms, rel: 0.9)
     for i in range(10):
@@ -31,8 +53,8 @@ def sample_pooled_df() -> pd.DataFrame:
             "global_unit_id": f"sessA_u{i:04d}",
             "session_id": "sessA",
             "unit_id": i,
-            "latency_ms": 3.0 + np.random.normal(0, 0.3),
-            "jitter_ms": 1.0 + np.random.normal(0, 0.1),
+            "latency_ms": 3.0 + rng.normal(0, 0.3),
+            "jitter_ms": 1.0 + rng.normal(0, 0.1),
             "reliability": 0.92,
             "waveform_correlation": 0.96,
             "salt_p_value": 0.0005,
@@ -47,8 +69,8 @@ def sample_pooled_df() -> pd.DataFrame:
             "global_unit_id": f"sessA_u{i:04d}",
             "session_id": "sessA",
             "unit_id": i,
-            "latency_ms": 14.0 + np.random.normal(0, 0.5),
-            "jitter_ms": 3.5 + np.random.normal(0, 0.2),
+            "latency_ms": 14.0 + rng.normal(0, 0.5),
+            "jitter_ms": 3.5 + rng.normal(0, 0.2),
             "reliability": 0.58,
             "waveform_correlation": 0.88,
             "salt_p_value": 0.025,
@@ -88,6 +110,7 @@ def test_entropy_ranking_identifies_boundary_unit(sample_pooled_df):
         df=df,
         cluster_labels=labels,
         random_state=42,
+        spike_data_map=_make_spike_data_map(df),
     )
 
     assert len(candidates) >= 1
@@ -304,9 +327,14 @@ def test_clustering_view_merge_clusters_cancellation(qapp, monkeypatch):
 # 3. ACTIVE LEARNING WORKFLOW & KEYBOARD SHORTCUTS
 # ============================================================================
 
-def test_clustering_view_active_learning_candidate_initialization(qapp):
+def test_clustering_view_active_learning_candidate_initialization(qapp, qtbot):
     """Verify initial active uncertainty sampling surfaces top candidate and displays metadata."""
     view = ClusteringView(load_mock=True)
+    qtbot.waitUntil(
+        lambda: (view._active_learning_worker is None or not view._active_learning_worker.isRunning())
+        and view.active_candidate is not None,
+        timeout=10000,
+    )
     assert view.active_candidate is not None
     assert isinstance(view.active_candidate, ActiveLearningCandidate)
     assert view.active_candidate.entropy >= 0.0
@@ -322,11 +350,17 @@ def test_clustering_view_active_learning_candidate_initialization(qapp):
     assert hasattr(view, "probe_cand_marker")
     assert hasattr(view, "probe_cand_line")
     assert hasattr(view, "marginal_widget")
+    view.close()
 
 
-def test_clustering_view_hotkey_assignment_auto_advance_deliverable(qapp):
+def test_clustering_view_hotkey_assignment_auto_advance_deliverable(qapp, qtbot):
     """Deliverable Acceptance Test: Press hotkey 2 on unit -> unit assigned to Cluster 2 -> next candidate surfaces."""
     view = ClusteringView(start_with_clusters=True, load_mock=True)
+    qtbot.waitUntil(
+        lambda: (view._active_learning_worker is None or not view._active_learning_worker.isRunning())
+        and view.active_candidate is not None,
+        timeout=10000,
+    )
     initial_cand = view.active_candidate
     assert initial_cand is not None
     initial_gid = initial_cand.global_unit_id
@@ -339,17 +373,29 @@ def test_clustering_view_hotkey_assignment_auto_advance_deliverable(qapp):
     unit_rec = view._pooled_units_map[initial_gid]
     assert unit_rec["cluster_id"] == 2
 
-    # 2. Verify next candidate was surfaced and is different from initial
+    # 2. Wait for async active learning worker to finish and advance candidate
+    qtbot.waitUntil(
+        lambda: (view._active_learning_worker is None or not view._active_learning_worker.isRunning())
+        and view.active_candidate is not None
+        and view.active_candidate.global_unit_id != initial_gid,
+        timeout=10000,
+    )
     next_cand = view.active_candidate
-    if next_cand is not None:
-        assert next_cand.global_unit_id != initial_gid
-        assert "Session:" in view.lbl_candidate.text()
-        assert "Unit:" in view.lbl_candidate.text()
+    assert next_cand is not None
+    assert next_cand.global_unit_id != initial_gid
+    assert "Session:" in view.lbl_candidate.text()
+    assert "Unit:" in view.lbl_candidate.text()
+    view.close()
 
 
-def test_clustering_view_skip_shortcut(qapp):
+def test_clustering_view_skip_shortcut(qapp, qtbot):
     """Verify pressing Space / 'S' skips candidate without changing cluster."""
     view = ClusteringView(load_mock=True)
+    qtbot.waitUntil(
+        lambda: (view._active_learning_worker is None or not view._active_learning_worker.isRunning())
+        and view.active_candidate is not None,
+        timeout=10000,
+    )
     cand1 = view.active_candidate
     assert cand1 is not None
     gid1 = cand1.global_unit_id
@@ -364,10 +410,17 @@ def test_clustering_view_skip_shortcut(qapp):
     # Cluster assignment should not have changed
     assert view._pooled_units_map[gid1]["cluster_id"] == cluster_before
 
-    # Next candidate should be active
+    # Wait for async active learning worker to finish and advance to next candidate
+    qtbot.waitUntil(
+        lambda: (view._active_learning_worker is None or not view._active_learning_worker.isRunning())
+        and view.active_candidate is not None
+        and view.active_candidate.global_unit_id != gid1,
+        timeout=10000,
+    )
     cand2 = view.active_candidate
-    if cand2 is not None:
-        assert cand2.global_unit_id != gid1
+    assert cand2 is not None
+    assert cand2.global_unit_id != gid1
+    view.close()
 
 
 # ============================================================================
@@ -434,6 +487,7 @@ def test_affinity_propagation_seeding(sample_pooled_df):
         df_extended,
         similarity_percentile=75.0,
         random_state=42,
+        spike_data_map=_make_spike_data_map(df_extended),
     )
 
     # Should have found at least 2 clear clusters
@@ -452,6 +506,8 @@ def test_compute_auto_assignments_threshold_and_curated_lock(sample_pooled_df):
     status_map = {
         "sessA_u0000": "Curated",
         "sessA_u0001": "Seeded",
+        "sessA_u0010": "Curated",
+        "sessA_u0011": "Seeded",
         "sessA_u0099_borderline": "Unassigned",
     }
 
@@ -537,9 +593,14 @@ def test_feature_settings_dialog_lifecycle(qapp):
     dlg.close()
 
 
-def test_clustering_view_new_cluster_creation_on_fly(qapp):
+def test_clustering_view_new_cluster_creation_on_fly(qapp, qtbot):
     """Verify on-the-fly cluster creation via create_new_cluster_for_candidate and 'N' hotkey."""
     view = ClusteringView(load_mock=True)
+    qtbot.waitUntil(
+        lambda: (view._active_learning_worker is None or not view._active_learning_worker.isRunning())
+        and view.active_candidate is not None,
+        timeout=10000,
+    )
     init_cluster_count = len(view.current_clustering_result.cluster_summaries)
     assert view.active_candidate is not None
     cand_gid = view.active_candidate.global_unit_id
@@ -553,6 +614,12 @@ def test_clustering_view_new_cluster_creation_on_fly(qapp):
     assert view._pooled_units_map[cand_gid]["cluster_id"] == new_cid
     assert view._unit_status_map[cand_gid] == "Curated"
     assert new_cid in view._cluster_card_order
+    qtbot.waitUntil(
+        lambda: (view._active_learning_worker is None or not view._active_learning_worker.isRunning())
+        and view.active_candidate is not None
+        and view.active_candidate.global_unit_id != cand_gid,
+        timeout=10000,
+    )
     view.close()
 
 
@@ -674,63 +741,6 @@ def test_dual_criterion_distance_gating_rejects_open_space_outliers():
     assert auto_assigns.get("u_extreme_outlier") == -1
 
 
-def test_dual_view_drawer_and_candidate_triage(qapp):
-    """Verify dual-view drawer, suggested candidates table, scrubbing feedback, and batch triage."""
-    view = ClusteringView(load_mock=True, start_with_clusters=True)
-
-    # 1. Open comparison drawer for cluster 0
-    view.set_cluster_comparison(0)
-    assert not view.comparison_pane.isHidden()
-    assert hasattr(view, "table_suggested_candidates")
-    assert hasattr(view, "curated_members_panel")
-    assert hasattr(view, "suggested_candidates_panel")
-
-    # In WP7 inspector shows only members; suggested candidates live in list_panel
-    assert not view.curated_members_panel.isHidden()
-    assert view.suggested_candidates_panel.isHidden()
-    assert view.table_list_panel.rowCount() >= 0
-
-    # 3. Test suggestions table population
-    row_count = view.table_suggested_candidates.rowCount()
-    assert row_count > 0
-
-    # 4. Test candidate scrubbing / selection
-    view.table_suggested_candidates.selectRow(0)
-    cand_item = view.table_suggested_candidates.item(0, 0)
-    cand_gid = cand_item.data(Qt.ItemDataRole.UserRole)
-    assert cand_gid is not None
-    assert view._current_selected_gid == cand_gid
-
-    # Verify candidate PSTH overlay is active on cluster 0 card
-    card0 = view._cluster_cards[0]
-    c_x, c_y = card0.candidate_psth_curve.getData()
-    assert len(c_x) > 0 and len(c_y) > 0
-
-    # 5. Test checkbox toggling
-    assert cand_item.checkState() == Qt.CheckState.Unchecked
-    view._toggle_selected_candidate_checkboxes()
-    assert cand_item.checkState() == Qt.CheckState.Checked
-
-    # 6. Test accepting candidate as curated
-    init_curated = sum(1 for rec in view._pooled_units_map.values() if rec.get("cluster_id") == 0 and view._unit_status_map.get(rec.get("global_unit_id")) == "Curated")
-    view._on_accept_selected_candidates()
-
-    # Candidate should now be curated into cluster 0
-    assert view._pooled_units_map[cand_gid]["cluster_id"] == 0
-    assert view._unit_status_map[cand_gid] == "Curated"
-    new_curated = sum(1 for rec in view._pooled_units_map.values() if rec.get("cluster_id") == 0 and view._unit_status_map.get(rec.get("global_unit_id")) == "Curated")
-    assert new_curated == init_curated + 1
-
-    # 7. Test dismissing candidate
-    if view.table_suggested_candidates.rowCount() > 0:
-        view.table_suggested_candidates.selectRow(0)
-        dismiss_gid = view.table_suggested_candidates.item(0, 0).data(Qt.ItemDataRole.UserRole)
-        view._on_dismiss_selected_candidates()
-        assert dismiss_gid in view._dismissed_cluster_candidates[0]
-
-    view.close()
-
-
 def test_compute_entropy_ranking_respects_feature_config_and_matrix(sample_pooled_df):
     """Verify compute_entropy_ranking respects feature_config and feature_matrix consistently with compute_auto_assignments."""
     df = sample_pooled_df
@@ -808,5 +818,284 @@ def test_compute_entropy_ranking_respects_feature_config_and_matrix(sample_poole
         random_state=42,
     )
     assert cands_salt[0].probabilities != cands_cfg[0].probabilities
+
+
+def test_seeded_units_preserved_and_not_re_evaluated_by_auto_assign(qapp, qtbot, sample_pooled_df):
+    """Seeded units must be excluded from classifier auto-assignment evaluation and status overwrite (Bug CL2)."""
+    df = sample_pooled_df
+    labels = df["cluster_id"].to_numpy(dtype=np.int32)
+    status_map = {
+        "sessA_u0000": "Curated",
+        "sessA_u0001": "Seeded",
+        "sessA_u0010": "Curated",
+        "sessA_u0099_borderline": "Unassigned",
+    }
+
+    auto_assigns, _ = compute_auto_assignments(
+        df=df,
+        cluster_labels=labels,
+        unit_status_map=status_map,
+        threshold=0.50,
+        max_distance_sigma=10.0,
+        random_state=42,
+    )
+    assert "sessA_u0000" not in auto_assigns
+    assert "sessA_u0001" not in auto_assigns
+
+    # Integration check on ClusteringView: toggling Auto-assign ON then OFF must preserve Seeded units
+    view = ClusteringView(start_with_clusters=False, load_mock=True)
+    assert view.seed_clusters_with_affinity_propagation() is True
+    qtbot.waitUntil(
+        lambda: view._active_learning_worker is None or not view._active_learning_worker.isRunning(),
+        timeout=10000,
+    )
+
+    seeded_before = {
+        gid: view._pooled_units_map[gid]["cluster_id"]
+        for gid, status in view._unit_status_map.items()
+        if status == "Seeded"
+    }
+    assert len(seeded_before) > 0
+
+    view.chk_auto_assign.setChecked(True)
+    qtbot.waitUntil(
+        lambda: view._active_learning_worker is None or not view._active_learning_worker.isRunning(),
+        timeout=10000,
+    )
+    for gid, expected_cid in seeded_before.items():
+        assert view._unit_status_map[gid] == "Seeded"
+        assert view._pooled_units_map[gid]["cluster_id"] == expected_cid
+
+    view.chk_auto_assign.setChecked(False)
+    qtbot.waitUntil(
+        lambda: view._active_learning_worker is None or not view._active_learning_worker.isRunning(),
+        timeout=10000,
+    )
+    for gid, expected_cid in seeded_before.items():
+        assert view._unit_status_map[gid] == "Seeded"
+        assert view._pooled_units_map[gid]["cluster_id"] == expected_cid
+
+    view.close()
+
+
+def test_cl4_distance_sigma_rescaled_nan_candidates_and_inf_features():
+    """Rescaled centroid distance in real SD units, NaN preservation in candidates, and inf safety (Bug CL4)."""
+    rows = []
+    for i in range(6):
+        rows.append({
+            "global_unit_id": f"c0_{i}",
+            "session_id": "s1",
+            "unit_id": i,
+            "latency_ms": 5.0 + 0.05 * i,
+            "jitter_ms": 1.0,
+            "reliability": 0.9,
+            "waveform_correlation": 0.95,
+            "salt_p_value": 0.001,
+            "cluster_id": 0,
+        })
+    for i in range(6):
+        rows.append({
+            "global_unit_id": f"c1_{i}",
+            "session_id": "s1",
+            "unit_id": 10 + i,
+            "latency_ms": 15.0 + 0.05 * i,
+            "jitter_ms": 1.0,
+            "reliability": 0.9,
+            "waveform_correlation": 0.95,
+            "salt_p_value": 0.001,
+            "cluster_id": 1,
+        })
+
+    # Add an unassigned candidate shifted ~0.8 population SDs from Cluster 1's centroid along latency
+    # With weight_latency=10.0, raw weighted norm is ~8.0 (> 3.5), while real SD distance is ~0.8 (< 3.5).
+    base_lats = np.array([r["latency_ms"] for r in rows])
+    pop_sd_approx = float(np.std(base_lats))
+    rows.append({
+        "global_unit_id": "cand_08sd",
+        "session_id": "s1",
+        "unit_id": "17.0",
+        "latency_ms": 15.125 + 0.8 * pop_sd_approx,
+        "jitter_ms": np.nan,
+        "reliability": 0.9,
+        "waveform_correlation": 0.95,
+        "salt_p_value": 0.001,
+        "cluster_id": -1,
+    })
+
+    df = pd.DataFrame(rows)
+    labels = df["cluster_id"].to_numpy(dtype=np.int32)
+    status_map = {r["global_unit_id"]: ("Curated" if r["cluster_id"] >= 0 else "Unassigned") for r in rows}
+
+    cfg = FeatureConfiguration(
+        use_latency=True,
+        weight_latency=10.0,
+        use_jitter=False,
+        use_reliability=False,
+        use_salt=False,
+        use_peak_response_rate=False,
+        use_time_to_response=False,
+        use_psth_profile=False,
+    )
+
+    auto_assigns, _ = compute_auto_assignments(
+        df=df,
+        cluster_labels=labels,
+        unit_status_map=status_map,
+        threshold=0.50,
+        max_distance_sigma=2.5,
+        feature_config=cfg,
+        random_state=42,
+    )
+    assert auto_assigns.get("cand_08sd") == 1
+
+    # Candidate feature_values must preserve NaN rather than substituting fake defaults, and parse float-int unit_id
+    df_nan = df.copy()
+    df_nan.loc[df_nan["global_unit_id"] == "cand_08sd", "latency_ms"] = np.nan
+    cands = compute_entropy_ranking(
+        df=df_nan,
+        cluster_labels=labels,
+        unit_status_map=status_map,
+        feature_config=cfg,
+        random_state=42,
+    )
+    cand = next(c for c in cands if c.global_unit_id == "cand_08sd")
+    assert np.isnan(cand.feature_values["latency_ms"])
+    assert np.isnan(cand.feature_values["jitter_ms"])
+    assert cand.unit_id == 17
+
+    # Infinite metric value in CSV must be sanitized just like NaN (not zero out column std)
+    df_inf = df.copy()
+    df_inf.loc[df_inf["global_unit_id"] == "cand_08sd", "latency_ms"] = np.inf
+    fm_inf, _, _ = extract_feature_matrix(df_inf, feature_config=cfg)
+    assert np.all(np.isfinite(fm_inf))
+    assert float(np.std(fm_inf[:, 0])) > 1.0
+
+
+def test_ground_truth_isolation_single_curated_cluster_ignores_auto_assigned(sample_pooled_df):
+    """When only 1 cluster has Curated/Seeded units, Auto-assigned units in another cluster must not train RF (Bug CL5)."""
+    df = sample_pooled_df.copy()
+    unit_ids = df["global_unit_id"].tolist()
+    labels = df["cluster_id"].to_numpy().copy()
+
+    # 3 Curated in cluster 0; 4 Auto-assigned in cluster 1; remaining Unassigned
+    status_map = {gid: "Unassigned" for gid in unit_ids}
+    for i in range(3):
+        status_map[unit_ids[i]] = "Curated"
+        labels[i] = 0
+    for i in range(10, 14):
+        status_map[unit_ids[i]] = "Auto-assigned"
+        labels[i] = 1
+    for i in range(3, 10):
+        labels[i] = -1
+    for i in range(14, len(unit_ids)):
+        labels[i] = -1
+
+    auto_assigns, confs = compute_auto_assignments(
+        df=df,
+        cluster_labels=labels,
+        unit_status_map=status_map,
+        threshold=0.50,
+        random_state=42,
+    )
+    assert auto_assigns == {}
+    assert confs == {}
+
+    cands = compute_entropy_ranking(
+        df=df,
+        cluster_labels=labels,
+        unit_status_map=status_map,
+        random_state=42,
+    )
+    assert len(cands) > 0
+    for cand in cands:
+        assert cand.entropy == 0.0
+        assert 1 not in cand.probabilities
+
+
+def test_worker_isolates_mutable_caches_from_gui_thread(qapp, qtbot):
+    """ActiveLearningWorker must receive isolated shallow copies of psth_cache, spike_data_map, and feature_matrix (Bug UI1)."""
+    from optocurator.ui.active_learning_worker import ActiveLearningWorker
+
+    orig_df = pd.DataFrame([{"global_unit_id": "s1_u0001", "cluster_id": 0}])
+    orig_labels = np.array([0], dtype=np.int32)
+    orig_status = {"s1_u0001": "Curated"}
+    orig_fm = np.array([[1.0, 2.0]], dtype=np.float64)
+    orig_spk = {"s1_u0001": (np.array([1.0]), np.array([1.01]))}
+    orig_cache = {("s1_u0001", (-30.0, 50.0), 2.0): np.array([1.0, 2.0])}
+
+    direct_worker = ActiveLearningWorker(
+        df=orig_df,
+        cluster_labels=orig_labels,
+        unit_status_map=orig_status,
+        feature_matrix=orig_fm,
+        spike_data_map=orig_spk,
+        psth_cache=orig_cache,
+    )
+    assert direct_worker.psth_cache is not orig_cache
+    assert direct_worker.feature_matrix is not orig_fm
+    assert direct_worker.spike_data_map is not orig_spk
+
+    view = ClusteringView(start_with_clusters=True, load_mock=True)
+    qtbot.waitUntil(
+        lambda: view._active_learning_worker is None or not view._active_learning_worker.isRunning(),
+        timeout=10000,
+    )
+    sentinel_key = ("sentinel", (-30.0, 50.0), 2.0)
+    view._unit_psth_cache[sentinel_key] = np.array([0.0])
+
+    view.refresh_active_learning(synchronous=False)
+    worker = view._active_learning_worker
+    assert worker is not None
+    assert worker.psth_cache is not view._unit_psth_cache
+
+    # Concurrent GUI-thread cache clear must not strip worker's snapshot
+    view._unit_psth_cache.clear()
+    assert sentinel_key in worker.psth_cache
+
+    qtbot.waitUntil(
+        lambda: view._active_learning_worker is None or not view._active_learning_worker.isRunning(),
+        timeout=10000,
+    )
+    view.close()
+
+
+def test_worker_invalidation_on_project_close_clear_and_reset(qapp, qtbot):
+    """Closing project, clearing experiments, or resetting clustering must invalidate in-flight AL workers (Bug UI2)."""
+    view = ClusteringView(start_with_clusters=True, load_mock=True)
+    qtbot.waitUntil(
+        lambda: view._active_learning_worker is None or not view._active_learning_worker.isRunning(),
+        timeout=10000,
+    )
+
+    # 1. Start async worker, then immediately close project before worker delivers results
+    view.refresh_active_learning(synchronous=False)
+    req_in_flight = view._worker_request_id
+    in_flight = view._active_learning_worker
+    assert in_flight is not None
+
+    view.close_clustering_project()
+    assert view._worker_request_id > req_in_flight
+
+    qtbot.waitUntil(lambda: not in_flight.isRunning(), timeout=10000)
+    qapp.processEvents()
+
+    assert view.active_candidate is None
+    assert view.ranked_candidates == []
+    assert view.lbl_candidate.text() == "No Experiment Selected"
+
+    # 2. Resetting clustering and clearing experiments must also advance _worker_request_id
+    view._load_mock_data()
+    qtbot.waitUntil(
+        lambda: view._active_learning_worker is None or not view._active_learning_worker.isRunning(),
+        timeout=10000,
+    )
+    req_mid = view._worker_request_id
+    view.reset_clustering(confirm=False)
+    assert view._worker_request_id > req_mid
+
+    req_clear = view._worker_request_id
+    view.clear_all_experiments()
+    assert view._worker_request_id > req_clear
+    view.close()
 
 

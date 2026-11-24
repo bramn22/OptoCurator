@@ -142,20 +142,6 @@ def test_wp9_units_column_table_and_probe(qapp, tmp_path: Path) -> None:
             "Likely but untagged",
         ]
 
-        # Test "Next likely untagged" cycling (highest likelihood first)
-        view.metrics[2].likelihood = 0.55
-        view.metrics[3].likelihood = 0.82
-        view._update_next_likely_button()
-        assert view.btn_next_likely.isEnabled() is True
-        assert "(2)" in view.btn_next_likely.text()
-
-        view.btn_next_likely.click()
-        assert view._focused_unit_id == 3
-        view.btn_next_likely.click()
-        assert view._focused_unit_id == 2
-        view.btn_next_likely.click()
-        assert view._focused_unit_id == 3
-
         # SiliconProbeWidget updated with all units and candidate marker visible
         assert len(view.probe_widget.units_scatter.data) == len(view.units)
         assert view.probe_widget.cand_marker.isVisible() is True
@@ -341,5 +327,43 @@ def test_wp9_re_enabling_latency_while_sorted_by_status_retags_all_units(qapp, t
             if m.latency_ms > 8.0:
                 assert m.is_tagged is False
                 assert "○" in view.table_units.item(r, _COL_STATUS).text()
+    finally:
+        view.close()
+
+
+def test_detection_manual_override_undo_and_stack_cleared_on_session_load(qapp, tmp_path: Path) -> None:
+    """Manual tag overrides must be undoable and the undo stack must clear on loading a new session (Bug UI5)."""
+    from optocurator.ui.view_detection import _COL_STATUS
+
+    exp1 = tmp_path / "wp9_undo_sess1"
+    exp2 = tmp_path / "wp9_undo_sess2"
+    create_synthetic_experiment_folder(exp1, n_units=4, n_pulses=20)
+    create_synthetic_experiment_folder(exp2, n_units=4, n_pulses=20)
+
+    view = DetectionView()
+    try:
+        assert view.load_experiment_folder(exp1) is True
+        row_u2 = _find_row_for_unit(view, 2)
+        view.table_units.selectRow(row_u2)
+        view._on_unit_selected()
+        assert view.table_units.item(row_u2, _COL_STATUS).text() == "○"
+
+        # Manual override must be recorded in undo stack and undone by undo_criteria_change()
+        view.btn_toggle_tag.click()
+        assert 2 in view.manual_overrides
+        assert view.btn_criteria_undo.isEnabled() is True
+
+        view.undo_criteria_change()
+        assert 2 not in view.manual_overrides
+        assert view.table_units.item(row_u2, _COL_STATUS).text() == "○"
+
+        # Change criteria to populate undo stack, then load a second session -> stack must be cleared
+        view.row_latency.edit_threshold.setText("4.5")
+        view.row_latency.edit_threshold.editingFinished.emit()
+        assert len(view._criteria_undo_stack) >= 1
+
+        assert view.load_experiment_folder(exp2) is True
+        assert len(view._criteria_undo_stack) == 0
+        assert view.btn_criteria_undo.isEnabled() is False
     finally:
         view.close()

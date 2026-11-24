@@ -10,14 +10,10 @@ Follows UI_OVERHAUL_SPEC.md § 4 and § 8.1:
 import html
 from pathlib import Path
 import struct
-import sys
 import tempfile
-from typing import Any, Dict, List, Mapping, Optional, Tuple, Union
+from typing import Dict, Mapping, Optional, Tuple, Union
 import zlib
-from PyQt6.QtCore import QRect, QSize, Qt
-from PyQt6.QtGui import QColor, QFont, QIcon, QPainter, QPen, QPixmap
-from pyqtgraph.dockarea import Dock, DockLabel
-from pyqtgraph.dockarea.DockDrop import DockDrop, DropAreaOverlay
+from PyQt6.QtGui import QColor, QFont, QIcon, QPainter, QPixmap
 
 from optocurator.analysis.clustering import (
     CLUSTER_PALETTE,
@@ -109,7 +105,6 @@ COLOR_LIGHT_PULSE_BAND: str = "#EAF2FD"  # 0–10 ms band in every PSTH/raster
 COLOR_PASSING_FILL: str = "#BFD3F7"      # Passing area fill in criterion KDEs
 COLOR_PASS_FILL: str = COLOR_PASSING_FILL
 COLOR_SEEDED: str = "#8E7CC3"            # Seeded status
-COLOR_SEEDED_BG: str = "#F3EFFB"
 
 COLOR_POPULATION_CURVE: str = "#94A3B8"  # Population KDE curve / subtle overlay
 COLOR_KDE_POP_FILL: str = "#E1E4E8"      # Population KDE area fill
@@ -123,47 +118,9 @@ COLOR_SURFACE_MUTED: str = "#F1F5F9"
 COLOR_PROBE_SITE: str = "#CBD5E1"
 COLOR_PROBE_SHANK_BG: str = "#F8FAFC"
 COLOR_PROBE_SHANK_BORDER: str = "#E2E8F0"
-COLOR_SKIPPED: str = "#9A6700"
 COLOR_AUTO_ASSIGNED: str = "#2563EB"
 
-# Backward-compatible aliases
-BG_BASE: str = COLOR_CANVAS
-BG_SURFACE: str = COLOR_PANEL
-BG_SIDEBAR: str = COLOR_CANVAS
-BG_INPUT: str = COLOR_PANEL
-BG_SUBTLE: str = COLOR_CANVAS
-BG_HOVER: str = COLOR_CANVAS
-
-TEXT_PRIMARY: str = COLOR_TEXT
-TEXT_SECONDARY: str = COLOR_TEXT_SECONDARY
-TEXT_MUTED: str = COLOR_TEXT_MUTED
-
-BORDER_DEFAULT: str = COLOR_DIVIDER
-BORDER_SUBTLE: str = COLOR_DIVIDER
-BORDER_STRONG: str = COLOR_BORDER_STRONG
-
-ACCENT_PRIMARY: str = COLOR_ACCENT
-ACCENT_HOVER: str = COLOR_ACCENT_HOVER
-ACCENT_Subtle: str = COLOR_ACCENT_BG
-ACCENT_BORDER: str = COLOR_ACCENT
-
-STATUS_TAGGED: str = COLOR_SUCCESS
-STATUS_TAGGED_BG: str = COLOR_SUCCESS_BG
-STATUS_WARNING: str = COLOR_WARNING
-STATUS_WARNING_BG: str = COLOR_WARNING_BG
-STATUS_DANGER: str = COLOR_DANGER
-STATUS_DANGER_BG: str = COLOR_DANGER_BG
-
-PLOT_BG: str = COLOR_PANEL
-PLOT_FG: str = COLOR_TEXT_SECONDARY
-PLOT_AXIS: str = COLOR_AXIS
-PLOT_SPONTANEOUS: str = COLOR_WAVEFORM_SPONT
-PLOT_OPTO_EVOKED: str = COLOR_WAVEFORM_EVOKED
 PLOT_HIST_BRUSH: Tuple[int, int, int, int] = (37, 99, 235, 45)
-PLOT_HIST_PEN: str = COLOR_ACCENT
-PLOT_ONSET_LINE: str = COLOR_ACCENT
-PLOT_BASELINE_LINE: str = COLOR_TEXT_MUTED
-PLOT_MARKER_CANDIDATE: str = COLOR_CANDIDATE_MARKER
 
 
 # -----------------------------------------------------------------------------
@@ -269,8 +226,9 @@ class ClusterColorService:
 
     def set_colors(self, mapping: Mapping[int, str]) -> None:
         """Replace all custom colour overrides in-place."""
+        items = list(mapping.items())
         self._custom_colors.clear()
-        for k, v in mapping.items():
+        for k, v in items:
             try:
                 cid = int(k)
             except (ValueError, TypeError):
@@ -323,11 +281,6 @@ DETECTION_WAVEFORM_PLOT_SIZE: Tuple[int, int] = PLOT_WAVEFORM_SIZE
 DETECTION_CRITERION_PLOT_SIZE: Tuple[int, int] = PLOT_CRITERION_KDE_SIZE
 DETECTION_PAIRPLOT_CELL_SIZE: Tuple[int, int] = (167, 167)
 
-CONTROL_HEIGHT: int = 30
-PANEL_PADDING: int = 12
-DIALOG_WIDTH_DEFAULT: int = 480
-HEADER_BAR_HEIGHT: int = 40
-FOOTER_BAR_HEIGHT: int = 24
 PSTH_LINE_WIDTH: float = 1.5
 
 # Plot axis label dictionaries for pyqtgraph setLabel(...)
@@ -820,7 +773,7 @@ QStatusBar {{
 # 6. COMPONENT STYLESHEET CONSTANTS & BUILDERS (NO INLINE CSS OUTSIDE THEME.PY)
 # -----------------------------------------------------------------------------
 
-# --- App & Dock ---
+# --- App & Dialogs ---
 STATUS_BAR_STYLE: str = (
     f"background-color: {COLOR_PANEL}; color: {COLOR_TEXT_SECONDARY}; "
     f"border-top: 1px solid {COLOR_DIVIDER}; font-size: {FONT_SIZE_CAPTION}px;"
@@ -861,149 +814,6 @@ PROGRESS_DIALOG_STYLE: str = f"""
     }}
 """
 
-DOCK_FRAME_STYLE: str = (
-    f"QFrame#top_dock {{ background-color: {COLOR_PANEL}; border-bottom: 1px solid {COLOR_DIVIDER}; }}"
-)
-DOCK_BRAND_STYLE: str = (
-    f"color: {COLOR_TEXT}; font-weight: 700; font-size: {FONT_SIZE_PANEL_TITLE}px; letter-spacing: 0.3px;"
-)
-DOCK_NAV_ACTIVE_STYLE: str = (
-    f"background-color: {COLOR_ACCENT_BG}; color: {COLOR_ACCENT}; "
-    f"border: 1px solid {COLOR_ACCENT}; border-radius: 5px; padding: 4px 12px; font-weight: 600;"
-)
-DOCK_NAV_INACTIVE_STYLE: str = (
-    f"background-color: transparent; color: {COLOR_TEXT_SECONDARY}; "
-    f"border: 1px solid transparent; border-radius: 5px; padding: 4px 12px; font-weight: 500;"
-)
-DOCK_SEPARATOR_STYLE: str = f"color: {COLOR_DIVIDER};"
-DOCK_CONTEXT_LABEL_STYLE: str = (
-    f"color: {COLOR_TEXT_MUTED}; font-family: {FONT_FAMILY_MONO}; font-size: {FONT_SIZE_CAPTION}px;"
-)
-
-
-def patch_dock_theme(dock: Optional[Any] = None) -> None:
-    """Monkey-patch DockLabel and DockDrop to enforce calm light title bar styling and prevent invalid drops."""
-    if dock is not None and hasattr(dock, "lbl_brand"):
-        dock.setStyleSheet(DOCK_FRAME_STYLE)
-        dock.lbl_brand.setStyleSheet(DOCK_BRAND_STYLE)
-        return
-
-    def custom_update_style(self: DockLabel) -> None:
-        color = COLOR_TEXT_MUTED if getattr(self, "dim", False) else COLOR_TEXT
-        style = f"""
-        DockLabel {{
-            background-color: {COLOR_PANEL};
-            color: {color};
-            font-weight: 600;
-            font-size: {FONT_SIZE_CAPTION}px;
-            padding: 0px 10px;
-            min-height: 26px;
-            max-height: 26px;
-            border: none;
-            border-bottom: 1px solid {COLOR_DIVIDER};
-            border-top-left-radius: 6px;
-            border-top-right-radius: 6px;
-        }}
-        DockLabel:hover {{
-            background-color: {COLOR_PANEL};
-            color: {color};
-        }}
-        """
-        self.setStyleSheet(style)
-
-    def custom_paint_event(self: DockLabel, ev: Any) -> None:
-        p = QPainter(self)
-        p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        if getattr(self, "orientation", "horizontal") == "vertical":
-            p.rotate(-90)
-            rgn = QRect(-self.height(), 0, self.height(), self.width())
-            p.drawText(rgn, int(Qt.AlignmentFlag.AlignCenter), self.text())
-        else:
-            rgn = self.rect().adjusted(10, 0, -10, 0)
-            p.drawText(rgn, int(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter), self.text())
-        p.end()
-
-    def custom_size_hint(self: DockLabel) -> QSize:
-        if getattr(self, "orientation", "horizontal") == "vertical":
-            return QSize(26, 80)
-        return QSize(120, 26)
-
-    def custom_minimum_size_hint(self: DockLabel) -> QSize:
-        if getattr(self, "orientation", "horizontal") == "vertical":
-            return QSize(26, 40)
-        return QSize(40, 26)
-
-    orig_drag_move = DockDrop.dragMoveEvent
-
-    def custom_drag_move(self: DockDrop, ev: Any) -> None:
-        pos_f = ev.posF() if hasattr(ev, "posF") else ev.position()
-        label_h = (
-            self.dndWidget.label.height()
-            if hasattr(self.dndWidget, "label") and self.dndWidget.label is not None
-            else 0
-        )
-        if pos_f.y() <= label_h:
-            self.dropArea = None
-            self.overlay.setDropArea(None)
-            ev.ignore()
-            return
-        orig_drag_move(self, ev)
-
-    orig_set_drop_area = DropAreaOverlay.setDropArea
-
-    def custom_set_drop_area(self: DropAreaOverlay, area: str) -> None:
-        orig_set_drop_area(self, area)
-        if area == "top" and self.dropArea == "top":
-            label_h = (
-                self.parent().label.height()
-                if hasattr(self.parent(), "label") and self.parent().label is not None
-                else 0
-            )
-            r = self.geometry()
-            r.setTop(label_h)
-            self.setGeometry(r)
-
-    DockLabel.updateStyle = custom_update_style
-    DockLabel.paintEvent = custom_paint_event
-    DockLabel.sizeHint = custom_size_hint
-    DockLabel.minimumSizeHint = custom_minimum_size_hint
-    DockDrop.dragMoveEvent = custom_drag_move
-    DropAreaOverlay.setDropArea = custom_set_drop_area
-
-
-patch_dock_theme()
-
-
-class TopDock(Dock):
-    """Custom Dock guaranteed to have horizontal, top-oriented title bars with clean styling."""
-
-    def __init__(
-        self,
-        name: str,
-        size: tuple = (10, 10),
-        widget: Any = None,
-        hideTitle: bool = False,
-        **kwargs: Any,
-    ) -> None:
-        kwargs["autoOrientation"] = False
-        super().__init__(name, size=size, widget=widget, hideTitle=hideTitle, **kwargs)
-        self.autoOrient = False
-        self.autoOrientation = False
-        self.orientation = "horizontal"
-        if hasattr(self, "label") and self.label is not None:
-            self.label.setFixedHeight(26)
-            self.label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
-        if hasattr(self, "dockdrop") and hasattr(self.dockdrop, "allowedAreas"):
-            self.dockdrop.allowedAreas.discard("center")
-        clean_border = f"1px solid {COLOR_DIVIDER}; border-radius: 6px; background-color: {COLOR_PANEL};"
-        self.hStyle = f"Dock > QWidget {{ border: {clean_border} }}"
-        self.vStyle = f"Dock > QWidget {{ border: {clean_border} }}"
-        self.nStyle = f"Dock > QWidget {{ border: {clean_border} }}"
-        self.setOrientation("horizontal", force=True)
-
-    def setOrientation(self, o: str = "horizontal", force: bool = False) -> None:
-        super().setOrientation("horizontal", force=True)
-
 
 _ASSETS_DIR = Path(__file__).resolve().parent / "assets"
 
@@ -1030,15 +840,6 @@ def make_app_mark_icon(size: int = 18, y_offset: int = 0) -> QIcon:
     painter.drawPixmap(0, y_offset, icon.pixmap(size, size))
     painter.end()
     return QIcon(pm)
-
-
-def make_window_icon() -> QIcon:
-    """Load the OS-appropriate application/window icon (.ico on Windows, .png elsewhere)."""
-    primary = "optocurator-icon.ico" if sys.platform == "win32" else "optocurator-icon.png"
-    icon = _asset_icon(primary)
-    if not icon.isNull() and not icon.pixmap(32, 32).isNull():
-        return icon
-    return make_app_mark_icon(32)
 
 
 def build_mode_card_style(accent_color: str = COLOR_ACCENT) -> str:
@@ -1068,56 +869,6 @@ LAUNCHER_CARD_TITLE_STYLE: str = (
 LAUNCHER_CARD_DESC_STYLE: str = (
     f"font-size: {FONT_SIZE_BODY}px; color: {COLOR_TEXT_SECONDARY}; line-height: 1.4;"
 )
-LAUNCHER_FOOTER_STYLE: str = (
-    f"color: {COLOR_TEXT_MUTED}; font-size: {FONT_SIZE_CAPTION}px;"
-)
-
-
-# --- Image Viewer ---
-IMAGE_VIEWER_COMPACT_FRAME_STYLE: str = f"""
-    QFrame#precomputedPlotViewer {{
-        background-color: {COLOR_PANEL};
-        border: 1px solid {COLOR_DIVIDER};
-        border-radius: 6px;
-    }}
-"""
-IMAGE_VIEWER_FULL_FRAME_STYLE: str = f"""
-    QFrame#precomputedPlotViewer {{
-        background-color: {COLOR_PANEL};
-        border: 1px solid {COLOR_BORDER_STRONG};
-        border-radius: 8px;
-    }}
-"""
-IMAGE_VIEWER_HEADER_STYLE: str = (
-    f"background-color: {COLOR_CANVAS}; border-bottom: 1px solid {COLOR_DIVIDER}; "
-    f"border-top-left-radius: 6px; border-top-right-radius: 6px;"
-)
-IMAGE_VIEWER_TITLE_STYLE: str = (
-    f"color: {COLOR_TEXT}; font-weight: 700; font-size: {FONT_SIZE_PANEL_TITLE}px;"
-)
-IMAGE_VIEWER_BADGE_STYLE: str = f"""
-    background-color: {COLOR_ACCENT_BG};
-    color: {COLOR_ACCENT};
-    font-size: {FONT_SIZE_CAPTION}px;
-    font-weight: 600;
-    border: 1px solid {COLOR_ACCENT};
-    border-radius: 4px;
-    padding: 2px 8px;
-"""
-IMAGE_VIEWER_META_STYLE: str = (
-    f"color: {COLOR_TEXT_SECONDARY}; font-size: {FONT_SIZE_CAPTION}px;"
-)
-IMAGE_VIEWER_PLACEHOLDER_STYLE: str = (
-    f"background-color: {COLOR_CANVAS}; border: 1px dashed {COLOR_BORDER_STRONG}; "
-    f"border-radius: 6px; color: {COLOR_TEXT_SECONDARY}; font-size: {FONT_SIZE_BODY}px; "
-    f"font-weight: 500; padding: 16px;"
-)
-IMAGE_VIEWER_ACTIVE_IMAGE_STYLE: str = (
-    f"background-color: {COLOR_PANEL}; border: none;"
-)
-IMAGE_VIEWER_SCROLL_STYLE: str = (
-    f"QScrollArea {{ border: none; background-color: {COLOR_PANEL}; }}"
-)
 
 
 # --- Shared Dialog Styles ---
@@ -1129,12 +880,6 @@ DIALOG_SUBTITLE_STYLE: str = (
 )
 DIALOG_NOTE_STYLE: str = (
     f"color: {COLOR_TEXT_MUTED}; font-size: {FONT_SIZE_CAPTION}px; font-style: italic;"
-)
-DIALOG_HINT_STYLE: str = (
-    f"color: {COLOR_TEXT_SECONDARY}; font-size: {FONT_SIZE_CAPTION}px; margin-top: 2px;"
-)
-DIALOG_PREVIEW_NOTE_STYLE: str = (
-    f"color: {COLOR_ACCENT}; font-size: {FONT_SIZE_CAPTION}px; font-weight: 500;"
 )
 DIALOG_SECTION_TITLE_STYLE: str = (
     f"font-weight: 600; font-size: {FONT_SIZE_PANEL_TITLE}px; color: {COLOR_TEXT};"
@@ -1156,74 +901,6 @@ DIALOG_INFO_BANNER_STYLE: str = (
     f"background-color: {COLOR_CANVAS}; border: 1px solid {COLOR_DIVIDER}; "
     f"border-radius: 5px; padding: 8px;"
 )
-DIALOG_DYNAMIC_STACK_STYLE: str = (
-    f"QStackedWidget#dynamic_param_stack {{ background-color: {COLOR_CANVAS}; "
-    f"border: 1px solid {COLOR_DIVIDER}; border-radius: 6px; }}"
-)
-DIALOG_TAB_WIDGET_STYLE: str = f"""
-    QTabWidget::pane {{
-        border: 1px solid {COLOR_DIVIDER};
-        border-radius: 6px;
-        background-color: {COLOR_PANEL};
-        top: -1px;
-    }}
-    QTabBar::tab {{
-        background-color: {COLOR_CANVAS};
-        color: {COLOR_TEXT_SECONDARY};
-        border: 1px solid {COLOR_DIVIDER};
-        border-bottom: none;
-        border-top-left-radius: 5px;
-        border-top-right-radius: 5px;
-        padding: 7px 14px;
-        margin-right: 3px;
-        font-weight: 600;
-        font-size: {FONT_SIZE_BODY}px;
-    }}
-    QTabBar::tab:selected {{
-        background-color: {COLOR_PANEL};
-        color: {COLOR_ACCENT};
-        border-bottom: 2px solid {COLOR_ACCENT};
-    }}
-    QTabBar::tab:hover:!selected {{
-        background-color: {COLOR_DIVIDER};
-        color: {COLOR_TEXT};
-    }}
-"""
-DIALOG_COMBO_STYLE: str = f"""
-    QComboBox {{
-        background-color: {COLOR_PANEL};
-        color: {COLOR_TEXT};
-        border: 1px solid {COLOR_BORDER_STRONG};
-        border-radius: 5px;
-        padding: 4px 10px;
-        min-height: 22px;
-    }}
-    QComboBox:hover {{
-        border-color: {COLOR_ACCENT};
-    }}
-    QComboBox QAbstractItemView {{
-        background-color: {COLOR_PANEL};
-        color: {COLOR_TEXT};
-        selection-background-color: {COLOR_ACCENT_BG};
-        selection-color: {COLOR_ACCENT};
-        border: 1px solid {COLOR_BORDER_STRONG};
-    }}
-"""
-DIALOG_CLEAN_SPIN_STYLE: str = f"""
-    QSpinBox, QDoubleSpinBox {{
-        background-color: {COLOR_PANEL};
-        color: {COLOR_TEXT};
-        border: 1px solid {COLOR_BORDER_STRONG};
-        border-radius: 5px;
-        padding: 4px 8px;
-        min-height: 22px;
-        min-width: 90px;
-    }}
-    QSpinBox:hover, QDoubleSpinBox:hover,
-    QSpinBox:focus, QDoubleSpinBox:focus {{
-        border-color: {COLOR_ACCENT};
-    }}
-"""
 DIALOG_GROUP_BOX_STYLE: str = f"""
     QGroupBox {{
         font-weight: 600;
@@ -1239,25 +916,6 @@ DIALOG_GROUP_BOX_STYLE: str = f"""
         subcontrol-origin: margin;
         left: 10px;
         padding: 0 6px;
-    }}
-"""
-DIALOG_TABLE_STYLE: str = f"""
-    QTableWidget {{
-        background-color: {COLOR_PANEL};
-        border: 1px solid {COLOR_DIVIDER};
-        border-radius: 6px;
-        gridline-color: {COLOR_DIVIDER};
-        font-size: {FONT_SIZE_BODY}px;
-    }}
-    QHeaderView::section {{
-        background-color: {COLOR_CANVAS};
-        color: {COLOR_TEXT_SECONDARY};
-        font-weight: 600;
-        font-size: {FONT_SIZE_CAPTION}px;
-        padding: 6px 8px;
-        border: none;
-        border-bottom: 1px solid {COLOR_DIVIDER};
-        border-right: 1px solid {COLOR_DIVIDER};
     }}
 """
 DIALOG_SECONDARY_BUTTON_STYLE: str = f"""
@@ -1300,9 +958,6 @@ DIALOG_DANGER_BUTTON_STYLE: str = f"""
         color: {COLOR_DANGER};
     }}
 """
-DIALOG_RADIO_PRIMARY_STYLE: str = (
-    f"font-weight: 600; color: {COLOR_ACCENT}; font-size: {FONT_SIZE_BODY}px; padding: 2px 0;"
-)
 DIALOG_RADIO_SECONDARY_STYLE: str = (
     f"font-weight: 600; color: {COLOR_TEXT}; font-size: {FONT_SIZE_BODY}px; padding: 2px 0;"
 )
@@ -1443,209 +1098,22 @@ def build_color_swatch_button_style(color_hex: str) -> str:
 TOOLBAR_LABEL_STYLE: str = (
     f"color: {COLOR_TEXT_SECONDARY}; font-size: {FONT_SIZE_CAPTION}px; font-weight: 600;"
 )
-TOOLBAR_STATUS_SUCCESS_STYLE: str = (
-    f"color: {COLOR_SUCCESS}; font-weight: 600; font-size: {FONT_SIZE_CAPTION}px; "
-    f"background-color: {COLOR_SUCCESS_BG}; border: 1px solid {COLOR_SUCCESS}; "
-    f"border-radius: 4px; padding: 3px 8px;"
-)
-TOOLBAR_STATUS_MUTED_STYLE: str = (
-    f"color: {COLOR_TEXT_SECONDARY}; font-weight: 500; font-size: {FONT_SIZE_CAPTION}px; "
-    f"background-color: {COLOR_CANVAS}; border: 1px solid {COLOR_DIVIDER}; "
-    f"border-radius: 4px; padding: 3px 8px;"
-)
-TOOLBAR_SEPARATOR_STYLE: str = f"color: {COLOR_DIVIDER};"
 TOOLBAR_SPIN_STYLE: str = (
     f"QDoubleSpinBox {{ padding: 2px 4px; font-size: {FONT_SIZE_CAPTION}px; min-height: 22px; }}"
-)
-SIDEBAR_CARD_HEADER_STYLE: str = (
-    f"background-color: {COLOR_CANVAS}; border-bottom: 1px solid {COLOR_DIVIDER}; "
-    f"border-top-left-radius: 6px; border-top-right-radius: 6px;"
 )
 DETECTION_UNIT_TITLE_STYLE: str = (
     f"font-size: {FONT_SIZE_HEADER_TITLE}px; font-weight: 700; color: {COLOR_TEXT};"
 )
-DETECTION_BADGE_TAGGED_STYLE: str = (
-    f"background-color: {COLOR_SUCCESS_BG}; color: {COLOR_SUCCESS}; "
-    f"border: 1px solid {COLOR_SUCCESS}; border-radius: 4px; padding: 3px 8px; "
-    f"font-weight: 600; font-size: {FONT_SIZE_CAPTION}px;"
-)
-DETECTION_BADGE_UNTAGGED_STYLE: str = (
-    f"background-color: {COLOR_CANVAS}; color: {COLOR_TEXT_SECONDARY}; "
-    f"border: 1px solid {COLOR_BORDER_STRONG}; border-radius: 4px; padding: 3px 8px; "
-    f"font-weight: 600; font-size: {FONT_SIZE_CAPTION}px;"
-)
-DETECTION_BADGE_CRITERIA_PASS_STYLE: str = (
-    f"background-color: {COLOR_ACCENT_BG}; color: {COLOR_ACCENT}; "
-    f"border: 1px solid {COLOR_ACCENT}; border-radius: 4px; padding: 3px 8px; "
-    f"font-weight: 600; font-size: {FONT_SIZE_CAPTION}px;"
-)
-DETECTION_BADGE_CRITERIA_FAIL_STYLE: str = (
-    f"background-color: {COLOR_WARNING_BG}; color: {COLOR_WARNING}; "
-    f"border: 1px solid {COLOR_WARNING}; border-radius: 4px; padding: 3px 8px; "
-    f"font-weight: 600; font-size: {FONT_SIZE_CAPTION}px;"
-)
-DETECTION_ACTION_PRIMARY_STYLE: str = (
-    f"QPushButton {{ background-color: {COLOR_ACCENT}; color: {COLOR_PANEL}; "
-    f"border: 1px solid {COLOR_ACCENT}; border-radius: 5px; padding: 5px 12px; font-weight: 600; }}"
-    f"QPushButton:hover {{ background-color: {COLOR_ACCENT_HOVER}; }}"
-)
-DETECTION_ACTION_SECONDARY_STYLE: str = (
-    f"QPushButton {{ background-color: {COLOR_PANEL}; color: {COLOR_TEXT}; "
-    f"border: 1px solid {COLOR_BORDER_STRONG}; border-radius: 5px; padding: 5px 12px; font-weight: 600; }}"
-    f"QPushButton:hover {{ background-color: {COLOR_CANVAS}; border-color: {COLOR_ACCENT}; color: {COLOR_ACCENT}; }}"
-)
-DETECTION_ACTION_SUBTLE_STYLE: str = (
-    f"QPushButton {{ background-color: {COLOR_CANVAS}; color: {COLOR_TEXT_SECONDARY}; "
-    f"border: 1px solid {COLOR_DIVIDER}; border-radius: 5px; padding: 5px 10px; font-weight: 500; }}"
-    f"QPushButton:hover {{ background-color: {COLOR_DIVIDER}; color: {COLOR_TEXT}; }}"
-)
-DETECTION_CRITERIA_CARD_STYLE: str = (
-    f"QFrame#criteria_card {{ background-color: {COLOR_PANEL}; border: 1px solid {COLOR_DIVIDER}; border-radius: 6px; }}"
-)
-DETECTION_CRITERIA_TITLE_STYLE: str = (
-    f"font-size: {FONT_SIZE_CAPTION}px; font-weight: 600; color: {COLOR_TEXT_SECONDARY};"
-)
-DETECTION_CRITERIA_METRIC_STYLE: str = (
-    f"font-size: {FONT_SIZE_CAPTION}px; font-weight: 600; color: {COLOR_TEXT};"
-)
-DETECTION_CRITERIA_VALUE_PASS_STYLE: str = (
-    f"font-family: {FONT_FAMILY_MONO}; font-size: {FONT_SIZE_CAPTION}px; font-weight: 600; color: {COLOR_SUCCESS};"
-)
-DETECTION_CRITERIA_VALUE_FAIL_STYLE: str = (
-    f"font-family: {FONT_FAMILY_MONO}; font-size: {FONT_SIZE_CAPTION}px; font-weight: 600; color: {COLOR_WARNING};"
-)
-DETECTION_CRITERIA_THRESH_STYLE: str = (
-    f"font-family: {FONT_FAMILY_MONO}; font-size: {FONT_SIZE_TICK}px; color: {COLOR_TEXT_MUTED};"
-)
-DETECTION_SUBPLOT_HEADER_STYLE: str = (
-    f"font-size: {FONT_SIZE_PANEL_TITLE}px; font-weight: 600; color: {COLOR_TEXT};"
-)
-DETECTION_CORR_BADGE_STYLE: str = (
-    f"background-color: {COLOR_CANVAS}; color: {COLOR_TEXT}; "
-    f"border: 1px solid {COLOR_DIVIDER}; border-radius: 4px; padding: 2px 8px; "
-    f"font-family: {FONT_FAMILY_MONO}; font-size: {FONT_SIZE_CAPTION}px; font-weight: 600;"
-)
 DETECTION_WAVEFORM_LEGEND_STYLE: str = (
     f"font-size: {FONT_SIZE_CAPTION}px; color: {COLOR_TEXT_SECONDARY}; font-weight: 500;"
 )
-DETECTION_HOTKEY_BAR_STYLE: str = (
-    f"color: {COLOR_TEXT_SECONDARY}; font-size: {FONT_SIZE_CAPTION}px;"
-)
-DETECTION_PLOT_FRAME_STYLE: str = (
-    f"QFrame#plot_container {{ background-color: {COLOR_PANEL}; border: 1px solid {COLOR_DIVIDER}; border-radius: 6px; }}"
-)
-
-
-def build_waveform_legend_html() -> str:
-    """Return HTML legend snippet for spontaneous vs light-evoked waveforms."""
-    return (
-        f"<span style='color:{COLOR_WAVEFORM_SPONT}; font-weight:600;'>— Spontaneous</span>"
-        f"&nbsp;&nbsp;&nbsp;"
-        f"<span style='color:{COLOR_WAVEFORM_EVOKED}; font-weight:600;'>— Light-evoked</span>"
-    )
 
 
 # --- Phase 2 Clusters View & Cards Styles ---
-def build_cluster_card_style(
-    color_hex: str,
-    is_selected: bool = False,
-    is_hovered: bool = False,
-) -> str:
-    """Build QFrame stylesheet for a ClusterCardWidget (§ 13.5)."""
-    if is_selected:
-        return (
-            f"QFrame#cluster_card {{"
-            f" background-color: {COLOR_PANEL};"
-            f" border-top: 2px solid {COLOR_ACCENT};"
-            f" border-right: 2px solid {COLOR_ACCENT};"
-            f" border-bottom: 2px solid {COLOR_ACCENT};"
-            f" border-left: 4px solid {color_hex};"
-            f" border-radius: 6px;"
-            f"}}"
-        )
-    border_col = COLOR_BORDER_STRONG if is_hovered else COLOR_DIVIDER
-    return (
-        f"QFrame#cluster_card {{"
-        f" background-color: {COLOR_PANEL};"
-        f" border-top: 1px solid {border_col};"
-        f" border-right: 1px solid {border_col};"
-        f" border-bottom: 1px solid {border_col};"
-        f" border-left: 4px solid {color_hex};"
-        f" border-radius: 6px;"
-        f"}}"
-    )
-
-
-def build_cluster_card_swatch_style(color_hex: str) -> str:
-    """Build 10x10 cluster colour swatch stylesheet."""
-    return (
-        f"background-color: {color_hex}; border-radius: 2px; border: none;"
-    )
-
-
-CLUSTER_CARD_TITLE_STYLE: str = (
-    f"font-weight: 600; font-size: {FONT_SIZE_BODY}px; color: {COLOR_TEXT}; "
-    f"background: transparent; border: none;"
-)
-
-
-def build_cluster_card_badge_style(color_hex: str) -> str:
-    """Build stylesheet for cluster card count/hotkey badge."""
-    text_col = text_color_for_cluster(color_hex)
-    return (
-        f"background-color: {COLOR_CANVAS}; color: {text_col}; "
-        f"border: 1px solid {COLOR_DIVIDER}; border-radius: 4px; "
-        f"padding: 1px 6px; font-size: {FONT_SIZE_TICK}px; font-weight: 600;"
-    )
-
-
 CLUSTER_CARD_SUBTITLE_STYLE: str = (
     f"color: {COLOR_TEXT_MUTED}; font-size: {FONT_SIZE_TICK}px; "
     f"background: transparent; border: none;"
 )
-
-CLUSTER_CARD_NORM_BADGE_STYLE: str = (
-    f"color: {COLOR_TEXT_MUTED}; background-color: {COLOR_CANVAS}; "
-    f"border: 1px solid {COLOR_DIVIDER}; border-radius: 3px; "
-    f"padding: 0px 4px; font-size: {FONT_SIZE_TICK}px; font-weight: 500;"
-)
-
-CLUSTER_CARD_COMPARE_BTN_STYLE: str = f"""
-    QPushButton {{
-        background-color: {COLOR_CANVAS};
-        color: {COLOR_TEXT_SECONDARY};
-        border: 1px solid {COLOR_DIVIDER};
-        border-radius: 4px;
-        padding: 1px 6px;
-        font-size: {FONT_SIZE_TICK}px;
-        font-weight: 600;
-        min-height: 16px;
-    }}
-    QPushButton:hover {{
-        background-color: {COLOR_ACCENT_BG};
-        color: {COLOR_ACCENT};
-        border-color: {COLOR_ACCENT};
-    }}
-"""
-
-CLUSTER_CARD_MENU_BTN_STYLE: str = f"""
-    QPushButton {{
-        background-color: transparent;
-        color: {COLOR_TEXT_MUTED};
-        border: 1px solid transparent;
-        border-radius: 4px;
-        padding: 0px 4px;
-        font-size: {FONT_SIZE_BODY}px;
-        font-weight: 700;
-        min-height: 16px;
-        max-width: 20px;
-    }}
-    QPushButton:hover {{
-        background-color: {COLOR_CANVAS};
-        color: {COLOR_TEXT};
-        border-color: {COLOR_DIVIDER};
-    }}
-"""
 
 
 def build_active_learning_button_style(enabled: bool) -> str:
@@ -1683,16 +1151,8 @@ def build_active_learning_button_style(enabled: bool) -> str:
     """
 
 
-CLUSTERS_TOOLBAR_GROUP_LABEL_STYLE: str = (
-    f"color: {COLOR_TEXT_MUTED}; font-size: {FONT_SIZE_TICK}px; font-weight: 700; letter-spacing: 0.4px;"
-)
 CLUSTERS_TOOLBAR_SUBLABEL_STYLE: str = (
     f"color: {COLOR_TEXT_SECONDARY}; font-size: {FONT_SIZE_CAPTION}px; font-weight: 600;"
-)
-CLUSTERS_TOOLBAR_BADGE_STYLE: str = (
-    f"color: {COLOR_ACCENT}; font-weight: 600; font-size: {FONT_SIZE_CAPTION}px; "
-    f"background-color: {COLOR_ACCENT_BG}; border: 1px solid {COLOR_ACCENT}; "
-    f"border-radius: 4px; padding: 2px 6px;"
 )
 CLUSTERS_TOOLBAR_ACTION_BTN_STYLE: str = f"""
     QPushButton {{
@@ -1797,28 +1257,8 @@ CLUSTERS_TOOLBAR_SLIDER_STYLE: str = f"""
     }}
 """
 
-CLUSTERS_INSPECTOR_HEADER_STYLE: str = (
-    f"background-color: {COLOR_CANVAS}; border-bottom: 1px solid {COLOR_DIVIDER};"
-)
 CLUSTERS_CANDIDATE_LABEL_STYLE: str = (
     f"color: {COLOR_TEXT}; font-weight: 600; font-size: {FONT_SIZE_BODY}px;"
-)
-
-
-def build_best_match_chip_style(color_hex: str) -> str:
-    """Build stylesheet for Best Match cluster badge in inspector."""
-    text_col = text_color_for_cluster(color_hex)
-    return (
-        f"color: {text_col}; background-color: {COLOR_CANVAS}; "
-        f"border: 1px solid {color_hex}; border-radius: 4px; "
-        f"padding: 2px 8px; font-weight: 600; font-size: {FONT_SIZE_CAPTION}px;"
-    )
-
-
-CLUSTERS_BEST_MATCH_CHIP_DEFAULT_STYLE: str = (
-    f"color: {COLOR_TEXT_SECONDARY}; background-color: {COLOR_CANVAS}; "
-    f"border: 1px solid {COLOR_DIVIDER}; border-radius: 4px; "
-    f"padding: 2px 8px; font-weight: 600; font-size: {FONT_SIZE_CAPTION}px;"
 )
 
 
@@ -1841,39 +1281,12 @@ CLUSTERS_COMPARISON_PANE_NEUTRAL_STYLE: str = (
     f"border: 1px solid {COLOR_DIVIDER}; border-radius: 6px; }}"
 )
 
-CLUSTERS_COMPARISON_HEADER_STYLE: str = (
-    f"background-color: {COLOR_CANVAS}; border-bottom: 1px solid {COLOR_DIVIDER}; "
-    f"border-top-left-radius: 5px; border-top-right-radius: 5px;"
-)
-
 
 def build_comparison_title_style(color_hex: str) -> str:
     """Build stylesheet for comparison pane title using readable cluster text colour."""
     text_col = text_color_for_cluster(color_hex)
     return f"font-weight: 700; font-size: {FONT_SIZE_BODY}px; color: {text_col};"
 
-
-CLUSTERS_COMPARISON_MODE_BTN_STYLE: str = f"""
-    QPushButton {{
-        background-color: {COLOR_PANEL};
-        color: {COLOR_TEXT_SECONDARY};
-        border: 1px solid {COLOR_BORDER_STRONG};
-        border-radius: 4px;
-        padding: 2px 8px;
-        font-size: {FONT_SIZE_TICK}px;
-        font-weight: 600;
-        min-height: 18px;
-    }}
-    QPushButton:checked {{
-        background-color: {COLOR_ACCENT};
-        color: {COLOR_PANEL};
-        border-color: {COLOR_ACCENT};
-    }}
-    QPushButton:hover:!checked {{
-        background-color: {COLOR_CANVAS};
-        color: {COLOR_TEXT};
-    }}
-"""
 
 CLUSTERS_COMPARISON_CLOSE_BTN_STYLE: str = f"""
     QPushButton {{
@@ -1891,11 +1304,6 @@ CLUSTERS_COMPARISON_CLOSE_BTN_STYLE: str = f"""
         border-radius: 4px;
     }}
 """
-
-CLUSTERS_COMPARISON_SECTION_TITLE_STYLE: str = (
-    f"color: {COLOR_TEXT_SECONDARY}; font-size: {FONT_SIZE_CAPTION}px; font-weight: 600; "
-    f"background-color: {COLOR_CANVAS}; padding: 4px 8px; border-radius: 4px;"
-)
 
 CLUSTERS_COMPARISON_EMPTY_LABEL_STYLE: str = (
     f"color: {COLOR_TEXT_MUTED}; font-style: italic; padding: 12px;"
@@ -1936,49 +1344,7 @@ CLUSTERS_SUGGESTED_TOOLBAR_BTN_SECONDARY_STYLE: str = f"""
     }}
 """
 
-CLUSTERS_SUGGESTED_TOOLBAR_BTN_DANGER_STYLE: str = f"""
-    QPushButton {{
-        background-color: {COLOR_PANEL};
-        color: {COLOR_DANGER};
-        border: 1px solid {COLOR_DANGER};
-        border-radius: 4px;
-        padding: 3px 8px;
-        font-size: {FONT_SIZE_CAPTION}px;
-        font-weight: 600;
-        min-height: 20px;
-    }}
-    QPushButton:hover {{
-        background-color: {COLOR_DANGER_BG};
-    }}
-"""
-
-CLUSTERS_CURATION_PANEL_STYLE: str = (
-    f"QFrame#curation_controls_frame {{ background-color: {COLOR_PANEL}; "
-    f"border: 1px solid {COLOR_DIVIDER}; border-radius: 6px; }}"
-)
-CLUSTERS_CURATION_SECTION_TITLE_STYLE: str = (
-    f"color: {COLOR_TEXT_SECONDARY}; font-size: {FONT_SIZE_CAPTION}px; font-weight: 600;"
-)
-CLUSTERS_CURATION_HINT_STYLE: str = (
-    f"color: {COLOR_TEXT_MUTED}; font-size: {FONT_SIZE_TICK}px;"
-)
-CLUSTERS_CURATION_BTN_NEW_STYLE: str = f"""
-    QPushButton {{
-        background-color: {COLOR_ACCENT_BG};
-        color: {COLOR_ACCENT};
-        border: 1px solid {COLOR_ACCENT};
-        border-radius: 5px;
-        padding: 4px 10px;
-        font-weight: 600;
-        font-size: {FONT_SIZE_CAPTION}px;
-    }}
-    QPushButton:hover {{
-        background-color: {COLOR_ACCENT};
-        color: {COLOR_PANEL};
-    }}
-"""
 CLUSTERS_CURATION_BTN_SKIP_STYLE: str = SECONDARY_BTN_STYLE
-CLUSTERS_SKIP_BTN_STYLE: str = SECONDARY_BTN_STYLE
 CLUSTERS_CURATION_BTN_UNDO_STYLE: str = SECONDARY_BTN_STYLE
 
 CLUSTERS_PROGRESS_BAR_CONTAINER_STYLE: str = (
@@ -2002,32 +1368,14 @@ CLUSTERS_PROGRESS_LEGEND_STYLE: str = (
     f"color: {COLOR_TEXT_SECONDARY}; font-size: {FONT_SIZE_TICK}px; font-weight: 500;"
 )
 
-CLUSTERS_EMPTY_PLACEHOLDER_STYLE: str = (
-    f"color: {COLOR_TEXT_MUTED}; font-size: {FONT_SIZE_BODY}px; font-style: italic; padding: 24px;"
-)
-
 CLUSTERS_PROBE_EXP_LABEL_STYLE: str = (
     f"color: {COLOR_TEXT}; font-size: {FONT_SIZE_CAPTION}px; font-weight: 600;"
 )
 CLUSTERS_PROBE_INFO_LABEL_STYLE: str = (
     f"color: {COLOR_TEXT_SECONDARY}; font-size: {FONT_SIZE_TICK}px; font-family: {FONT_FAMILY_MONO};"
 )
-CLUSTERS_SCROLL_AREA_STYLE: str = (
-    f"QScrollArea {{ border: none; background-color: {COLOR_CANVAS}; }}"
-)
-CLUSTERS_CARDS_CONTAINER_STYLE: str = (
-    f"background-color: {COLOR_CANVAS};"
-)
 CLUSTERS_SECTION_SUBHEADER_STYLE: str = (
     f"color: {COLOR_TEXT_SECONDARY}; font-size: {FONT_SIZE_CAPTION}px; font-weight: 600;"
-)
-CLUSTERS_SMALL_BTN_STYLE: str = (
-    f"QPushButton {{ padding: 2px 8px; font-size: {FONT_SIZE_CAPTION}px; min-height: 20px; }}"
-)
-CLUSTERS_SMALL_DANGER_BTN_STYLE: str = (
-    f"QPushButton {{ padding: 2px 8px; font-size: {FONT_SIZE_CAPTION}px; min-height: 20px; "
-    f"color: {COLOR_DANGER}; border-color: {COLOR_DANGER}; }}"
-    f"QPushButton:hover {{ background-color: {COLOR_DANGER_BG}; }}"
 )
 CLUSTERS_FILTER_COMBO_MAX_VISIBLE: int = 10
 CLUSTERS_FILTER_COMBO_MAX_POPUP_HEIGHT: int = 260
@@ -2249,41 +1597,9 @@ CLUSTERS_COMPARISON_SCROLL_STYLE: str = f"""
 
 CLUSTERS_TRANSPARENT_BG_STYLE: str = "background-color: transparent;"
 
-CLUSTERS_SUGGESTED_SECTION_STYLE: str = (
-    f"font-size: {FONT_SIZE_TICK}px; font-weight: 700; color: {COLOR_SUCCESS}; letter-spacing: 0.5px;"
-)
-
 CLUSTERS_MEMBERS_SECTION_STYLE: str = (
     f"font-size: {FONT_SIZE_TICK}px; font-weight: 700; color: {COLOR_TEXT_SECONDARY}; letter-spacing: 0.5px;"
 )
-
-CLUSTERS_SUGGESTED_TABLE_STYLE: str = f"""
-    QTableWidget {{
-        background-color: {COLOR_PANEL};
-        border: 1px solid {COLOR_DIVIDER};
-        border-radius: 4px;
-        gridline-color: {COLOR_DIVIDER};
-        font-size: {FONT_SIZE_TICK}px;
-        color: {COLOR_TEXT};
-    }}
-    QTableWidget::item {{
-        padding: 2px 4px;
-    }}
-    QTableWidget::item:selected {{
-        background-color: {COLOR_ACCENT_BG};
-        color: {COLOR_ACCENT};
-        font-weight: 600;
-    }}
-    QHeaderView::section {{
-        background-color: {COLOR_CANVAS};
-        color: {COLOR_TEXT_SECONDARY};
-        font-weight: 700;
-        font-size: {FONT_SIZE_TICK}px;
-        border: none;
-        border-bottom: 1px solid {COLOR_BORDER_STRONG};
-        padding: 3px 2px;
-    }}
-"""
 
 CLUSTERS_SHORTCUTS_HELP_TEXT_STYLE: str = (
     f"font-size: {FONT_SIZE_CAPTION}px; color: {COLOR_TEXT}; line-height: 1.5;"
@@ -3093,12 +2409,6 @@ DETECTION_SUMMARY_LABEL_STYLE: str = (
 DETECTION_SUMMARY_VALUE_STYLE: str = (
     f"color: {COLOR_TEXT}; font-family: {FONT_FAMILY_MONO}; "
     f"font-size: {FONT_SIZE_CAPTION}px; font-weight: 600; background-color: transparent;"
-)
-
-DETECTION_NEXT_LIKELY_BADGE_STYLE: str = (
-    f"background-color: {COLOR_ACCENT}; color: {COLOR_PANEL}; "
-    f"border-radius: 8px; padding: 1px 6px; "
-    f"font-size: {FONT_SIZE_TICK}px; font-weight: 600;"
 )
 
 DETECTION_NEXT_LIKELY_BTN_STYLE: str = f"""

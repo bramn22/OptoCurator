@@ -60,6 +60,11 @@ build = [
     "twine>=5.0",
 ]
 
+[project.urls]
+Homepage = "https://github.com/bramn22/OptoCurator"
+Repository = "https://github.com/bramn22/OptoCurator"
+Issues = "https://github.com/bramn22/OptoCurator/issues"
+
 [project.scripts]
 optocurator = "optocurator.cli:main"
 

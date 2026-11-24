@@ -272,15 +272,13 @@ def test_wp8_statusbar_layout_sync_and_dirty_indicator(qapp, tmp_path: Path):
 
 def test_wp8_section12_dialogs_contracts(qapp):
     """Verify widget presence, constraints, and primary button labels across all § 12 dialogs."""
-    # EmbeddingSettingsDialog: PCA & UMAP only (no t-SNE), scaling, color_by, "Apply"
+    # EmbeddingSettingsDialog: PCA & UMAP only (no t-SNE), "Apply"
     dlg_emb = EmbeddingSettingsDialog()
     try:
         methods_text = [dlg_emb.combo_method.itemText(i) for i in range(dlg_emb.combo_method.count())]
         methods_data = [dlg_emb.combo_method.itemData(i) for i in range(dlg_emb.combo_method.count())]
         assert methods_data == ["PCA", "UMAP"]
         assert all("tsne" not in t.lower() and "t-sne" not in t.lower() for t in methods_text)
-        assert dlg_emb.combo_scaling.count() >= 1
-        assert dlg_emb.combo_color_by.count() >= 1
         assert dlg_emb.btn_apply.text() == "Apply"
     finally:
         dlg_emb.close()
@@ -312,8 +310,6 @@ def test_wp8_section12_dialogs_contracts(qapp):
     # FeatureSettingsDialog
     dlg_feat = FeatureSettingsDialog()
     try:
-        assert dlg_feat.chk_same_as_al is not None
-        assert dlg_feat.combo_scaling.count() >= 1
         ok_btn = dlg_feat.button_box.button(QDialogButtonBox.StandardButton.Ok)
         assert ok_btn is not None
         assert ok_btn.text() == "Apply"
@@ -477,3 +473,84 @@ def test_wp8_multi_experiment_project_roundtrip_and_removal(qapp, tmp_path: Path
         )
     finally:
         reopened.close()
+
+
+def test_mainwindow_close_and_recent_open_prompt_dirty_changes(qapp, tmp_path: Path, monkeypatch):
+    """MainWindow.closeEvent, recent open, and close-session cancel-save must protect unsaved changes (Bug UI4)."""
+    from PyQt6.QtGui import QCloseEvent
+    from PyQt6.QtWidgets import QMessageBox
+    from optocurator.ui.app import MainWindow
+
+    win = MainWindow()
+    try:
+        win.detection_view._set_dirty(True)
+        win.clustering_view._set_dirty(True)
+
+        # 1. Cancelling QMessageBox blocks closeEvent
+        monkeypatch.setattr(QMessageBox, "question", lambda *a, **kw: QMessageBox.StandardButton.Cancel)
+        ev_cancel = QCloseEvent()
+        win.closeEvent(ev_cancel)
+        assert ev_cancel.isAccepted() is False
+
+        # 2. Cancelling QMessageBox aborts _open_recent_detection_folder and _open_recent_clustering_project before loading
+        called_loads = []
+        monkeypatch.setattr(win.detection_view, "load_experiment_folder", lambda *a, **kw: called_loads.append("det") or True)
+        monkeypatch.setattr(win.clustering_view, "load_project", lambda *a, **kw: called_loads.append("clust") or True)
+        win._open_recent_detection_folder(str(tmp_path / "some_det"))
+        win._open_recent_clustering_project(str(tmp_path / "some_proj"))
+        assert called_loads == []
+
+        # 3. Clicking Save in _on_close_detection_session then cancelling file dialog (_is_dirty remains True) must NOT close session
+        closed_det = []
+        monkeypatch.setattr(QMessageBox, "question", lambda *a, **kw: QMessageBox.StandardButton.Save)
+        monkeypatch.setattr(win.detection_view, "export_curated_session", lambda *a, **kw: None)
+        monkeypatch.setattr(win.detection_view, "close_session", lambda: closed_det.append(True))
+        win._on_close_detection_session()
+        assert closed_det == []
+
+        # 4. Choosing Discard allows closeEvent to proceed
+        monkeypatch.setattr(QMessageBox, "question", lambda *a, **kw: QMessageBox.StandardButton.Discard)
+        ev_discard = QCloseEvent()
+        win.closeEvent(ev_discard)
+        assert ev_discard.isAccepted() is True
+    finally:
+        win.detection_view._set_dirty(False)
+        win.clustering_view._set_dirty(False)
+        win.close()
+
+
+def test_mainwindow_hierarchical_clustering_respects_replace_all(qapp, qtbot, monkeypatch):
+    """MainWindow._on_hierarchical_clustering must delegate to prompt_hierarchical_clustering and honor Replace all (Bug UI6)."""
+    from PyQt6.QtWidgets import QDialog
+    from optocurator.ui.app import MainWindow
+    from optocurator.ui.dialog_clustering import HierarchicalClusteringDialog
+
+    win = MainWindow()
+    try:
+        win.switch_to_clustering()
+        win.clustering_view._load_mock_data()
+        qtbot.waitUntil(
+            lambda: win.clustering_view._active_learning_worker is None
+            or not win.clustering_view._active_learning_worker.isRunning(),
+            timeout=10000,
+        )
+        curated_gid = next(iter(win.clustering_view._pooled_units_map))
+        win.clustering_view.assign_candidate_to_cluster(0, unit_id=curated_gid)
+        assert win.clustering_view._unit_status_map[curated_gid] == "Curated"
+
+        def _fake_exec(dlg):
+            dlg.radio_replace_all.setChecked(True)
+            return QDialog.DialogCode.Accepted
+
+        monkeypatch.setattr(HierarchicalClusteringDialog, "exec", _fake_exec)
+        win._on_hierarchical_clustering()
+        assert win.clustering_view._unit_status_map[curated_gid] != "Curated"
+    finally:
+        qtbot.waitUntil(
+            lambda: win.clustering_view._active_learning_worker is None
+            or not win.clustering_view._active_learning_worker.isRunning(),
+            timeout=10000,
+        )
+        win.detection_view._set_dirty(False)
+        win.clustering_view._set_dirty(False)
+        win.close()

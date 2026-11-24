@@ -63,9 +63,6 @@ class ModeCardWidget(QFrame):
         super().mousePressEvent(event)
 
 
-ModeCard = ModeCardWidget
-
-
 class LauncherDashboardWidget(QWidget):
     """Home launcher dashboard allowing user to enter Phase 1 or Phase 2."""
 

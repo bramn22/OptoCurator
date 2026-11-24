@@ -6,6 +6,8 @@
 - Seamless transition between putative mode and active auto-assign mode
 """
 
+from typing import Any
+
 import numpy as np
 import pytest
 from PyQt6.QtCore import Qt
@@ -121,14 +123,23 @@ def test_cluster_card_suggested_badge(qapp):
     card.close()
 
 
-def test_putative_indicators_when_auto_assign_disabled(qapp):
+def _refresh_active_learning_and_wait(view: ClusteringView, qtbot: Any) -> None:
+    """Trigger asynchronous active learning refresh and wait until worker results apply."""
+    with qtbot.waitSignal(view.progress_updated, timeout=10000):
+        view.refresh_active_learning()
+    qtbot.waitUntil(
+        lambda: view._active_learning_worker is not None and not view._active_learning_worker.isRunning(),
+        timeout=10000,
+    )
+
+
+def test_putative_indicators_when_auto_assign_disabled(qapp, qtbot):
     """Verify ClusteringView displays putative progress bar segment and cluster badges when auto-assign is OFF."""
     view = ClusteringView(load_mock=True, start_with_clusters=True)
     assert view.auto_assign_enabled is False
 
-    # Synchronously refresh active learning
-    view.refresh_active_learning(synchronous=True)
-    qapp.processEvents()
+    # Asynchronously refresh active learning and wait for worker + UI updates
+    _refresh_active_learning_and_wait(view, qtbot)
 
     # With mock data and trained RF classifier, high-confidence units are captured as suggested
     suggested_map = view._suggested_auto_assignments
@@ -153,15 +164,20 @@ def test_putative_indicators_when_auto_assign_disabled(qapp):
     view.close()
 
 
-def test_indicators_clear_when_auto_assign_enabled(qapp):
+def test_indicators_clear_when_auto_assign_enabled(qapp, qtbot):
     """Verify that enabling Auto-assign promotes putative cells to Auto-assigned and clears yellow warning badges."""
     view = ClusteringView(load_mock=True, start_with_clusters=True)
-    view.refresh_active_learning(synchronous=True)
-    qapp.processEvents()
+    _refresh_active_learning_and_wait(view, qtbot)
 
-    # Toggle Auto-assign ON
-    view.chk_auto_assign.setChecked(True)
-    qapp.processEvents()
+    # Toggle Auto-assign ON (triggers refresh_active_learning asynchronously)
+    with qtbot.waitSignal(view.progress_updated, timeout=10000):
+        view.chk_auto_assign.setChecked(True)
+    qtbot.waitUntil(
+        lambda: view._active_learning_worker is not None
+        and not view._active_learning_worker.isRunning()
+        and len(view._suggested_auto_assignments) == 0,
+        timeout=10000,
+    )
     assert view.auto_assign_enabled is True
 
     # Putative suggestions must be empty, formal auto-assignments active
@@ -173,9 +189,14 @@ def test_indicators_clear_when_auto_assign_enabled(qapp):
     for card in view._cluster_cards.values():
         assert card.lbl_suggested_badge.isHidden()
 
-    # Toggle Auto-assign back OFF
+    # Toggle Auto-assign back OFF (reverts auto-assignments and triggers refresh_active_learning asynchronously)
     view.chk_auto_assign.setChecked(False)
-    qapp.processEvents()
+    blocker = qtbot.waitSignal(view.progress_updated, timeout=10000)
+    blocker.wait()
+    qtbot.waitUntil(
+        lambda: view._active_learning_worker is not None and not view._active_learning_worker.isRunning(),
+        timeout=10000,
+    )
     assert view.auto_assign_enabled is False
 
     # Suggested counts must re-emerge
@@ -188,11 +209,10 @@ def test_indicators_clear_when_auto_assign_enabled(qapp):
     view.close()
 
 
-def test_cluster_card_click_opens_comparison_pane(qapp):
+def test_cluster_card_click_opens_comparison_pane(qapp, qtbot):
     """Verify clicking anywhere on a cluster card (including the warning badge) opens the comparison pane."""
     view = ClusteringView(load_mock=True, start_with_clusters=True)
-    view.refresh_active_learning(synchronous=True)
-    qapp.processEvents()
+    _refresh_active_learning_and_wait(view, qtbot)
 
     # Pick first cluster card
     first_cid = view._cluster_card_order[0]
@@ -207,50 +227,8 @@ def test_cluster_card_click_opens_comparison_pane(qapp):
     assert view._comparison_cluster_id == first_cid
     assert not view.comparison_pane.isHidden()
 
-    # Verify candidate suggestions and member viewers populated
-    assert view.table_suggested_candidates.rowCount() >= 0
+    # Verify member viewers populated
     assert len(view.comparison_viewers) >= 0
-
-    view.close()
-
-
-def test_suggested_candidates_alignment_with_putative_badges(qapp):
-    """Verify that putative badge counts align with suggested candidates above threshold and dismissals update counts."""
-    view = ClusteringView(load_mock=True, start_with_clusters=True)
-    view.refresh_active_learning(synchronous=True)
-    qapp.processEvents()
-
-    suggested_map = view._suggested_auto_assignments
-    suggested_counts = view._get_suggested_counts_per_cluster()
-
-    # Find a cluster that has at least one putative auto-assignment
-    target_cid = None
-    for cid, count in suggested_counts.items():
-        if count > 0:
-            target_cid = cid
-            break
-
-    if target_cid is not None:
-        expected_putative = [gid for gid, cid in suggested_map.items() if cid == target_cid]
-        # Open comparison pane for target_cid
-        view.set_cluster_comparison(target_cid)
-        qapp.processEvents()
-
-        # All units in expected_putative must be in suggested candidates table
-        cand_gids = [c["global_unit_id"] for c in view._current_suggested_candidates]
-        for gid in expected_putative:
-            assert gid in cand_gids, f"Putative unit {gid} should appear in comparison suggested candidates"
-
-        # Now test dismissal: dismiss one putative candidate
-        dismiss_gid = expected_putative[0]
-        if target_cid not in view._dismissed_cluster_candidates:
-            view._dismissed_cluster_candidates[target_cid] = set()
-        view._dismissed_cluster_candidates[target_cid].add(dismiss_gid)
-
-        # Update progress and verify the suggested count for target_cid decremented by 1
-        view._update_classification_progress()
-        new_counts = view._get_suggested_counts_per_cluster()
-        assert new_counts.get(target_cid, 0) == suggested_counts[target_cid] - 1
 
     view.close()
 

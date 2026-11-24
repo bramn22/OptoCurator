@@ -11,6 +11,7 @@ from sklearn.ensemble import RandomForestClassifier
 from sklearn.preprocessing import StandardScaler
 
 from optocurator.analysis.metrics import compute_psth_and_raster
+from optocurator.models import DEFAULT_PULSE_DURATION_MS
 
 COLOR_UNASSIGNED: str = "#A0A4AA"
 
@@ -171,16 +172,6 @@ class ActiveLearningCandidate:
     cluster_id: int = -1
     session_id: str = ""
     unit_id: int = 0
-    depth: float = 0.0
-
-
-@dataclass
-class ActiveLearningState:
-    """State of the active learning queue for fast unit curation."""
-
-    active_candidate: Optional[ActiveLearningCandidate] = None
-    ranked_candidates: List[ActiveLearningCandidate] = field(default_factory=list)
-    skipped_unit_ids: Set[str] = field(default_factory=set)
 
 
 @dataclass
@@ -188,7 +179,7 @@ class ClusteringResult:
     """Complete results of dimensionality reduction, clustering, and cluster profiling."""
 
     cluster_labels: np.ndarray                  # shape (N,), int
-    pca_coordinates: np.ndarray                 # shape (N, 2), float
+    pca_coordinates: np.ndarray                 # shape (N, 2), float (2D PCA or UMAP embedding)
     explained_variance_ratio: List[float]       # [var_pc1, var_pc2]
     cluster_summaries: Dict[int, ClusterSummary]
     feature_matrix: np.ndarray                  # shape (N, D)
@@ -271,23 +262,6 @@ def generate_psth_matrix(
                         psth_cache[cache_key] = psth_matrix[idx, :]
                     continue
 
-        # Fallback to analytical Gaussian formula
-        lat = float(row.get("latency_ms", 5.0)) if pd.notna(row.get("latency_ms")) else 10.0
-        jit = float(row.get("jitter_ms", 1.5)) if pd.notna(row.get("jitter_ms")) else 2.0
-        rel = float(row.get("reliability", 0.8)) if pd.notna(row.get("reliability")) else 0.5
-        jit = max(jit, 0.5)
-
-        rng = np.random.RandomState(idx * 37 + 11)
-        base_rate = float(rng.uniform(3.0, 10.0))
-        baseline = np.ones(n_bins) * base_rate
-
-        evoked_peak = (rel * 80.0) * np.exp(-0.5 * ((t_bins - lat) / jit) ** 2)
-        evoked_peak[t_bins < 0] = 0.0
-
-        psth_matrix[idx, :] = baseline + evoked_peak
-        if psth_cache is not None:
-            psth_cache[cache_key] = psth_matrix[idx, :]
-
     return psth_matrix, t_bins
 
 
@@ -305,7 +279,7 @@ def extract_feature_matrix(
         feature_config: Optional granular feature toggle and weighting configuration.
         spike_data_map: Optional map from unit identifier to (spike_times, pulse_onsets).
         psth_cache: Optional cache mapping (gid, time_window_ms, bin_size_ms, smooth, sigma) to 1D PSTH array.
-        pulse_duration_ms: Optional optogenetic pulse duration in ms (defaults to 20.0 if None or <= 0).
+        pulse_duration_ms: Optional optogenetic pulse duration in ms (defaults to DEFAULT_PULSE_DURATION_MS if None or <= 0).
 
     Returns:
         Tuple of (feature_matrix [N, D], psth_matrix [N, T], time_bins_ms [T]).
@@ -352,7 +326,7 @@ def extract_feature_matrix(
             base_stds = np.zeros(n_units, dtype=np.float64)
 
     # 4. Pulse window mask for peak_rate and signed peak_response_rate
-    pulse_dur = float(pulse_duration_ms) if (pulse_duration_ms is not None and pulse_duration_ms > 0) else 20.0
+    pulse_dur = float(pulse_duration_ms) if (pulse_duration_ms is not None and pulse_duration_ms > 0) else DEFAULT_PULSE_DURATION_MS
     if n_bins > 0:
         pulse_mask = (t_bins >= 0.0) & (t_bins <= pulse_dur)
         if not np.any(pulse_mask):
@@ -389,22 +363,22 @@ def extract_feature_matrix(
 
     if cfg.use_latency:
         vals = df["latency_ms"].to_numpy(dtype=np.float64, copy=True) if "latency_ms" in df.columns else np.full(n_units, 20.0)
-        vals = np.where(np.isnan(vals), 20.0, vals)
+        vals = np.where(~np.isfinite(vals), 20.0, vals)
         scalar_columns.append(("latency_ms", vals, float(cfg.weight_latency)))
 
     if cfg.use_jitter:
         vals = df["jitter_ms"].to_numpy(dtype=np.float64, copy=True) if "jitter_ms" in df.columns else np.full(n_units, 5.0)
-        vals = np.where(np.isnan(vals), 5.0, vals)
+        vals = np.where(~np.isfinite(vals), 5.0, vals)
         scalar_columns.append(("jitter_ms", vals, float(cfg.weight_jitter)))
 
     if cfg.use_reliability:
         vals = df["reliability"].to_numpy(dtype=np.float64, copy=True) if "reliability" in df.columns else np.zeros(n_units)
-        vals = np.where(np.isnan(vals), 0.0, vals)
+        vals = np.where(~np.isfinite(vals), 0.0, vals)
         scalar_columns.append(("reliability", vals, float(cfg.weight_reliability)))
 
     if cfg.use_salt:
         vals = df["salt_p_value"].to_numpy(dtype=np.float64, copy=True) if "salt_p_value" in df.columns else np.ones(n_units)
-        vals = np.where(np.isnan(vals), 1.0, vals)
+        vals = np.where(~np.isfinite(vals), 1.0, vals)
         if cfg.salt_log10_transform:
             vals = -np.log10(np.clip(vals, 1e-6, 1.0))
         scalar_columns.append(("salt_p_value", vals, float(cfg.weight_salt)))
@@ -1039,6 +1013,9 @@ def seed_clusters_affinity_propagation(
     ap_params: Optional[AffinityPropagationParameters] = None,
     embedding_params: Optional[EmbeddingParameters] = None,
     pulse_duration_ms: Optional[float] = None,
+    psth_smooth: bool = True,
+    psth_gaussian_sigma_ms: float = 2.0,
+    cluster_psth_norm: str = "probability",
 ) -> ClusteringResult:
     """Seed initial response clusters using Affinity Propagation with exemplar distance filtering.
 
@@ -1058,6 +1035,9 @@ def seed_clusters_affinity_propagation(
         ap_params: Optional granular AffinityPropagationParameters.
         embedding_params: Optional EmbeddingParameters for 2D scatter coordinates.
         pulse_duration_ms: Optional optogenetic pulse duration in ms.
+        psth_smooth: Whether to apply Gaussian smoothing to presented cluster PSTHs.
+        psth_gaussian_sigma_ms: Gaussian smoothing sigma in ms for presented cluster PSTHs.
+        cluster_psth_norm: Normalization mode for cluster PSTH cards ('probability', 'peak', 'raw').
 
     Returns:
         ClusteringResult with initial cluster labels, 2D coordinates, explained variance, and summaries.
@@ -1067,6 +1047,9 @@ def seed_clusters_affinity_propagation(
         feature_config=feature_config,
         presented_window_ms=presented_window_ms,
         presented_bin_size_ms=presented_bin_size_ms,
+        psth_smooth=psth_smooth,
+        psth_gaussian_sigma_ms=psth_gaussian_sigma_ms,
+        cluster_psth_norm=cluster_psth_norm,
     )
     if n_units == 0:
         return ClusteringResult(
@@ -1198,6 +1181,53 @@ def seed_clusters_affinity_propagation(
     )
 
 
+def _feature_population_rms_scale(feat_matrix: np.ndarray) -> float:
+    """Return sqrt(sum_j Var(feat_matrix[:, j])) so L2 distances are expressed in real population SD units."""
+    if feat_matrix.size == 0 or feat_matrix.shape[0] <= 1:
+        return 1.0
+    scale = float(np.sqrt(np.sum(np.var(feat_matrix, axis=0))))
+    return scale if (np.isfinite(scale) and scale > 1e-8) else 1.0
+
+
+def _candidate_feature_values(row: pd.Series) -> Dict[str, float]:
+    """Extract display metric dictionary from a unit row, preserving NaN for missing/non-finite entries."""
+    keys = ("latency_ms", "jitter_ms", "reliability", "waveform_correlation", "salt_p_value")
+    out: Dict[str, float] = {}
+    for k in keys:
+        val = row.get(k, float("nan"))
+        try:
+            f = float(val)
+            out[k] = f if np.isfinite(f) else float("nan")
+        except (TypeError, ValueError):
+            out[k] = float("nan")
+    return out
+
+
+def _select_training_indices(
+    labels: np.ndarray,
+    unit_ids: Sequence[str],
+    status_map: Optional[Mapping[str, str]],
+) -> List[int]:
+    """Select ground-truth ('Curated'/'Seeded') indices when status_map is provided, avoiding Auto-assigned leakage."""
+    n_units = len(labels)
+    if not status_map:
+        return [i for i in range(n_units) if labels[i] >= 0]
+    return [
+        i
+        for i in range(n_units)
+        if labels[i] >= 0 and status_map.get(unit_ids[i]) in ("Curated", "Seeded")
+    ]
+
+
+def _parse_int_unit_id(raw_uid: Any) -> int:
+    """Parse integer unit ID from int, float, or numeric string representations."""
+    try:
+        val = float(raw_uid)
+        return int(val) if np.isfinite(val) else 0
+    except (TypeError, ValueError, OverflowError):
+        return 0
+
+
 def compute_auto_assignments(
     df: pd.DataFrame,
     cluster_labels: Sequence[int],
@@ -1268,17 +1298,9 @@ def compute_auto_assignments(
 
     labels = np.asarray(cluster_labels, dtype=np.int32)
 
-    # Ground-truth isolation: Only train on human-curated or AP-seeded units.
+    # Ground-truth isolation: Only train on human-curated or AP-seeded units when status_map is provided.
     # Auto-assigned pseudo-labels are strictly excluded from training.
-    ground_truth_indices = [
-        i for i in range(n_units)
-        if labels[i] >= 0 and status_map.get(unit_ids[i]) in ("Curated", "Seeded")
-    ]
-    if len(ground_truth_indices) >= 2 and len(np.unique(labels[ground_truth_indices])) >= 2:
-        train_indices = ground_truth_indices
-    else:
-        # Fallback if no status annotations exist yet
-        train_indices = [i for i in range(n_units) if labels[i] >= 0]
+    train_indices = _select_training_indices(labels, unit_ids, status_map)
 
     unique_train_classes = np.unique(labels[train_indices]) if train_indices else []
 
@@ -1313,8 +1335,8 @@ def compute_auto_assignments(
                 for k, c in enumerate(classes_all)
             }
 
-    # Evaluate all units that are NOT curated
-    eval_indices = [i for i in range(n_units) if status_map.get(unit_ids[i]) != "Curated"]
+    # Evaluate all units that are neither Curated nor Seeded
+    eval_indices = [i for i in range(n_units) if status_map.get(unit_ids[i]) not in ("Curated", "Seeded")]
     if not eval_indices:
         if return_all_probabilities:
             return {}, {}, all_unit_probabilities
@@ -1322,6 +1344,8 @@ def compute_auto_assignments(
 
     probs = clf.predict_proba(feat_matrix[eval_indices])
     classes = clf.classes_
+
+    feature_scale = _feature_population_rms_scale(feat_matrix)
 
     auto_assignments: Dict[str, int] = {}
     confidences: Dict[str, float] = {}
@@ -1335,12 +1359,12 @@ def compute_auto_assignments(
 
         confidences[gid] = round(max_prob, 4)
 
-        # Dual-criterion distance gate: candidate Euclidean distance in standardized feature space <= max_distance_sigma
+        # Dual-criterion distance gate: standardized centroid distance in real population SD units <= max_distance_sigma
         passes_distance_gate = True
         if best_class in cluster_centroids:
             centroid = cluster_centroids[best_class]
             cand_feat = feat_matrix[idx]
-            dist = float(np.linalg.norm(cand_feat - centroid))
+            dist = float(np.linalg.norm(cand_feat - centroid)) / feature_scale
             if dist > max_distance_sigma:
                 passes_distance_gate = False
 
@@ -1445,14 +1469,7 @@ def compute_cluster_candidate_suggestions(
 
     # If probabilities not available from precomputation, train RF or compute from distance
     if len(probs_for_target) < n_units:
-        ground_truth_indices = [
-            i for i in range(n_units)
-            if labels[i] >= 0 and status_map.get(unit_ids[i]) in ("Curated", "Seeded")
-        ]
-        if len(ground_truth_indices) >= 2 and len(np.unique(labels[ground_truth_indices])) >= 2:
-            train_indices = ground_truth_indices
-        else:
-            train_indices = [i for i in range(n_units) if labels[i] >= 0]
+        train_indices = _select_training_indices(labels, unit_ids, status_map)
 
         unique_classes = np.unique(labels[train_indices]) if train_indices else []
         if len(train_indices) >= 2 and len(unique_classes) >= 2 and target_cluster_id in unique_classes:
@@ -1477,6 +1494,7 @@ def compute_cluster_candidate_suggestions(
                     sim = float(np.exp(-0.5 * (rms_z ** 2)))
                     probs_for_target[gid] = sim
 
+    feature_scale = _feature_population_rms_scale(feat_matrix)
     candidates: List[Dict[str, Any]] = []
     for i in range(n_units):
         gid = unit_ids[i]
@@ -1496,7 +1514,7 @@ def compute_cluster_candidate_suggestions(
             continue
 
         cand_feat = feat_matrix[i]
-        dist = float(np.linalg.norm(cand_feat - centroid))
+        dist = float(np.linalg.norm(cand_feat - centroid)) / feature_scale
 
         p = probs_for_target.get(gid, 0.0)
 
@@ -1532,7 +1550,6 @@ def compute_entropy_ranking(
     unit_status_map: Optional[Dict[str, str]] = None,
     feature_matrix: Optional[np.ndarray] = None,
     skipped_unit_ids: Optional[Set[str]] = None,
-    candidate_gids: Optional[List[str]] = None,
     n_estimators: int = 100,
     random_state: int = 42,
     cycle_skipped: bool = False,
@@ -1540,6 +1557,7 @@ def compute_entropy_ranking(
     spike_data_map: Optional[Dict[str, Tuple[np.ndarray, np.ndarray]]] = None,
     psth_cache: Optional[Dict[Any, np.ndarray]] = None,
     pulse_duration_ms: Optional[float] = None,
+    precomputed_probabilities: Optional[Dict[str, Dict[int, float]]] = None,
 ) -> List[ActiveLearningCandidate]:
     """Train Random Forest classifier on clustered units and rank candidate units by Shannon entropy.
 
@@ -1555,7 +1573,6 @@ def compute_entropy_ranking(
         unit_status_map: Optional dictionary of {gid: status}. When provided, classifier trains on Curated/Seeded units.
         feature_matrix: Optional precomputed feature matrix of shape (N, D). If None, extracted from df.
         skipped_unit_ids: Set of unit global IDs to exclude from candidate ranking.
-        candidate_gids: Optional explicit list of global IDs to evaluate as candidates.
         n_estimators: Number of trees in the Random Forest (default: 100).
         random_state: Random state for reproducibility.
         cycle_skipped: If True, skipped units are appended after active candidates instead of dropped.
@@ -1593,23 +1610,10 @@ def compute_entropy_ranking(
 
     # Units with valid non-negative cluster assignments are available for training
     # Ground-truth isolation: Only train on human-curated or AP-seeded units when status map is available
-    if unit_status_map:
-        ground_truth_indices = [
-            i for i in range(n_units)
-            if labels[i] >= 0 and unit_status_map.get(unit_ids[i]) in ("Curated", "Seeded")
-        ]
-        if len(ground_truth_indices) >= 2 and len(np.unique(labels[ground_truth_indices])) >= 2:
-            train_indices = ground_truth_indices
-        else:
-            train_indices = [i for i in range(n_units) if labels[i] >= 0]
-    else:
-        train_indices = [i for i in range(n_units) if labels[i] >= 0]
+    train_indices = _select_training_indices(labels, unit_ids, unit_status_map)
 
     # Determine candidate indices
-    if candidate_gids is not None:
-        active_indices = [i for i, gid in enumerate(unit_ids) if gid in candidate_gids and gid not in skipped]
-        skipped_indices = [i for i, gid in enumerate(unit_ids) if gid in candidate_gids and gid in skipped] if cycle_skipped else []
-    elif any(labels < 0):
+    if any(labels < 0):
         # Unassigned units are primary candidates
         active_indices = [i for i in range(n_units) if labels[i] < 0 and unit_ids[i] not in skipped]
         skipped_indices = [i for i in range(n_units) if labels[i] < 0 and unit_ids[i] in skipped] if cycle_skipped else []
@@ -1637,66 +1641,60 @@ def compute_entropy_ranking(
                     global_unit_id=gid,
                     entropy=0.0,
                     probabilities=prob_dict,
-                    feature_values={
-                        "latency_ms": float(row.get("latency_ms", 5.0)) if pd.notna(row.get("latency_ms")) else 5.0,
-                        "jitter_ms": float(row.get("jitter_ms", 1.5)) if pd.notna(row.get("jitter_ms")) else 1.5,
-                        "reliability": float(row.get("reliability", 0.8)) if pd.notna(row.get("reliability")) else 0.8,
-                        "waveform_correlation": float(row.get("waveform_correlation", 0.9)) if pd.notna(row.get("waveform_correlation")) else 0.9,
-                        "salt_p_value": float(row.get("salt_p_value", 0.01)) if pd.notna(row.get("salt_p_value")) else 0.01,
-                    },
+                    feature_values=_candidate_feature_values(row),
                     cluster_id=int(labels[idx]),
                     session_id=str(row.get("session_id", "")),
-                    unit_id=int(row.get("unit_id", 0)) if str(row.get("unit_id", "")).isdigit() else 0,
-                    depth=float(row.get("depth", (idx % 32) * 100 + 400)),
+                    unit_id=_parse_int_unit_id(row.get("unit_id", 0)),
                 )
             )
         active_cands = [c for c in candidates if c.global_unit_id not in skipped]
         skipped_cands = [c for c in candidates if c.global_unit_id in skipped]
         return active_cands + skipped_cands
 
-    # Train Random Forest classifier
-    clf = RandomForestClassifier(
-        n_estimators=n_estimators,
-        class_weight="balanced",
-        random_state=random_state,
+    # Reuse precomputed Random Forest posteriors when supplied; otherwise fit RF classifier once
+    use_precomputed = (
+        precomputed_probabilities is not None
+        and all(bool(precomputed_probabilities.get(unit_ids[idx])) for idx in cand_indices)
     )
-    X_train = feat_matrix[train_indices]
-    y_train = labels[train_indices]
-    clf.fit(X_train, y_train)
-
-    # Predict class probabilities on candidate set
-    X_cand = feat_matrix[cand_indices]
-    probs = clf.predict_proba(X_cand)
-    classes = clf.classes_
+    if use_precomputed:
+        per_unit_probs = {
+            unit_ids[idx]: {int(c): float(p) for c, p in precomputed_probabilities[unit_ids[idx]].items()}
+            for idx in cand_indices
+        }
+    else:
+        clf = RandomForestClassifier(
+            n_estimators=n_estimators,
+            class_weight="balanced",
+            random_state=random_state,
+        )
+        clf.fit(feat_matrix[train_indices], labels[train_indices])
+        probs = clf.predict_proba(feat_matrix[cand_indices])
+        classes = clf.classes_
+        per_unit_probs = {
+            unit_ids[idx]: {int(c): float(probs[j, k]) for k, c in enumerate(classes)}
+            for j, idx in enumerate(cand_indices)
+        }
 
     eps = 1e-12
     candidates = []
-    for j, idx in enumerate(cand_indices):
-        p_vec = probs[j]
+    for idx in cand_indices:
+        gid = unit_ids[idx]
+        prob_dict = per_unit_probs[gid]
+        p_vec = np.asarray(list(prob_dict.values()), dtype=np.float64)
         # Shannon entropy: H(x) = -sum(P(y=c|x) * log2(P(y=c|x)))
         h_val = -float(np.sum(p_vec * np.log2(p_vec + eps)))
         h_val = max(0.0, round(h_val, 4))
 
-        prob_dict = {int(c): float(p_vec[k]) for k, c in enumerate(classes)}
         row = df.iloc[idx]
-        gid = unit_ids[idx]
-
         candidates.append(
             ActiveLearningCandidate(
                 global_unit_id=gid,
                 entropy=h_val,
                 probabilities=prob_dict,
-                feature_values={
-                    "latency_ms": float(row.get("latency_ms", 5.0)) if pd.notna(row.get("latency_ms")) else 5.0,
-                    "jitter_ms": float(row.get("jitter_ms", 1.5)) if pd.notna(row.get("jitter_ms")) else 1.5,
-                    "reliability": float(row.get("reliability", 0.8)) if pd.notna(row.get("reliability")) else 0.8,
-                    "waveform_correlation": float(row.get("waveform_correlation", 0.9)) if pd.notna(row.get("waveform_correlation")) else 0.9,
-                    "salt_p_value": float(row.get("salt_p_value", 0.01)) if pd.notna(row.get("salt_p_value")) else 0.01,
-                },
+                feature_values=_candidate_feature_values(row),
                 cluster_id=int(labels[idx]),
                 session_id=str(row.get("session_id", "")),
-                unit_id=int(row.get("unit_id", 0)) if str(row.get("unit_id", "")).isdigit() else 0,
-                depth=float(row.get("depth", (idx % 32) * 100 + 400)),
+                unit_id=_parse_int_unit_id(row.get("unit_id", 0)),
             )
         )
 
@@ -1706,4 +1704,96 @@ def compute_entropy_ranking(
     active_cands.sort(key=lambda c: c.entropy, reverse=True)
     skipped_cands.sort(key=lambda c: c.entropy, reverse=True)
     return active_cands + skipped_cands
+
+
+def run_active_learning_cycle(
+    df: pd.DataFrame,
+    cluster_labels: Sequence[int],
+    unit_status_map: Optional[Dict[str, str]] = None,
+    threshold: float = 0.85,
+    max_distance_sigma: float = 3.5,
+    feature_config: Optional[FeatureConfiguration] = None,
+    feature_matrix: Optional[np.ndarray] = None,
+    skipped_gids: Optional[Set[str]] = None,
+    n_estimators: int = 100,
+    random_state: int = 42,
+    spike_data_map: Optional[Dict[str, Tuple[np.ndarray, np.ndarray]]] = None,
+    psth_cache: Optional[Dict[Any, np.ndarray]] = None,
+    auto_assign_enabled: bool = False,
+    pulse_duration_ms: Optional[float] = None,
+) -> Tuple[List[ActiveLearningCandidate], Dict[str, int], Dict[str, float], Dict[str, Dict[int, float]], Dict[str, int]]:
+    """Run one unified Random Forest fit for auto-assignment evaluation and entropy candidate ranking."""
+    status_map = unit_status_map if unit_status_map is not None else {}
+    n_units = len(df)
+    if feature_matrix is None or (n_units > 0 and feature_matrix.shape[0] != n_units):
+        feat_matrix, _, _ = extract_feature_matrix(
+            df,
+            feature_config=feature_config,
+            spike_data_map=spike_data_map,
+            psth_cache=psth_cache,
+            pulse_duration_ms=pulse_duration_ms,
+        )
+    else:
+        feat_matrix = feature_matrix
+
+    raw_auto_assignments, confidences, all_probabilities = compute_auto_assignments(
+        df=df,
+        cluster_labels=cluster_labels,
+        unit_status_map=status_map,
+        threshold=threshold,
+        max_distance_sigma=max_distance_sigma,
+        feature_config=feature_config,
+        feature_matrix=feat_matrix,
+        n_estimators=n_estimators,
+        random_state=random_state,
+        spike_data_map=spike_data_map,
+        psth_cache=psth_cache,
+        return_all_probabilities=True,
+        pulse_duration_ms=pulse_duration_ms,
+    )
+
+    if auto_assign_enabled:
+        auto_assignments = {gid: cid for gid, cid in raw_auto_assignments.items() if cid >= 0}
+        suggested_assignments: Dict[str, int] = {}
+    else:
+        auto_assignments = {}
+        suggested_assignments = {
+            gid: cid
+            for gid, cid in raw_auto_assignments.items()
+            if cid >= 0 and status_map.get(gid, "Unassigned") not in ("Curated", "Seeded")
+        }
+
+    temp_labels = np.array(cluster_labels, dtype=np.int32, copy=True)
+    unit_ids = (
+        df["global_unit_id"].astype(str).tolist()
+        if "global_unit_id" in df.columns
+        else [f"u_{i}" for i in range(n_units)]
+    )
+    for i, gid in enumerate(unit_ids):
+        status = status_map.get(gid, "Unassigned")
+        if status == "Curated":
+            continue
+        if gid in auto_assignments:
+            pred_cid = auto_assignments[gid]
+            if pred_cid >= 0:
+                temp_labels[i] = pred_cid
+            elif status not in ("Seeded", "Curated"):
+                temp_labels[i] = -1
+
+    candidates = compute_entropy_ranking(
+        df=df,
+        cluster_labels=temp_labels,
+        unit_status_map=status_map,
+        feature_matrix=feat_matrix,
+        skipped_unit_ids=skipped_gids,
+        n_estimators=n_estimators,
+        random_state=random_state,
+        cycle_skipped=True,
+        feature_config=feature_config,
+        spike_data_map=spike_data_map,
+        psth_cache=psth_cache,
+        pulse_duration_ms=pulse_duration_ms,
+        precomputed_probabilities=all_probabilities,
+    )
+    return candidates, auto_assignments, confidences, all_probabilities, suggested_assignments
 

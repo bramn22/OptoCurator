@@ -122,20 +122,6 @@ class FeatureSettingsDialog(QDialog):
         intro.setStyleSheet(DIALOG_SUBTITLE_STYLE)
         main_layout.addWidget(intro)
 
-        top_opts = QHBoxLayout()
-        top_opts.setSpacing(12)
-        self.chk_same_as_al = QCheckBox("Same as active learning")
-        self.chk_same_as_al.setChecked(True)
-        self.chk_same_as_al.setToolTip("Use the same feature set for seeding, unsupervised clustering, and active learning.")
-        top_opts.addWidget(self.chk_same_as_al)
-        top_opts.addStretch()
-        top_opts.addWidget(QLabel("Scaling:"))
-        self.combo_scaling = QComboBox()
-        self.combo_scaling.addItem("Standardized (z-score)", "zscore")
-        self.combo_scaling.setToolTip("Features are standardized (zero mean, unit variance) before clustering.")
-        top_opts.addWidget(self.combo_scaling)
-        main_layout.addLayout(top_opts)
-
         # Scroll area for clean containment
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
@@ -215,7 +201,7 @@ class FeatureSettingsDialog(QDialog):
         grid_metrics.addWidget(self.spin_w_baseline, 5, 1)
 
         # Row 6: Peak Evoked Rate
-        self.chk_peak_rate = QCheckBox("Peak Evoked Firing Rate (Hz, t >= 0 ms)")
+        self.chk_peak_rate = QCheckBox("Peak Evoked Firing Rate (Hz, within pulse window)")
         self.spin_w_peak_rate = _make_weight_spin()
         self.edit_weight_peak_rate = self.spin_w_peak_rate
         self.chk_peak_rate.toggled.connect(self.spin_w_peak_rate.setEnabled)

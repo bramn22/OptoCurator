@@ -19,7 +19,6 @@ from optocurator.io.project import (
     save_clustering_project,
     load_clustering_project,
 )
-from optocurator.ui.app import MainWindow
 from optocurator.ui.view_clusters import ClusteringView, ClusterCardWidget
 from tests.test_detection_workflow import create_synthetic_experiment_folder
 
@@ -210,29 +209,3 @@ def test_clustering_view_norm_mode_switching(qapp, tmp_path):
         assert card.plot_psth.getAxis("left").labelText == "Firing Rate (Hz)"
 
     view.close()
-
-
-def test_main_window_cluster_psth_norm_menu(qapp):
-    """Verify MainWindow View -> Cluster PSTH Normalization menu actions synchronize with ClusteringView."""
-    win = MainWindow()
-    win.show()
-
-    assert hasattr(win, "group_psth_norm")
-    assert hasattr(win, "psth_norm_actions")
-    assert win.psth_norm_actions["probability"].isChecked() is True
-    assert win.psth_norm_actions["peak"].isChecked() is False
-
-    # 1. Trigger Peak from menu
-    win.psth_norm_actions["peak"].trigger()
-    assert win.clustering_view.cluster_psth_norm == "peak"
-    assert win.clustering_view.combo_psth_norm.currentText() == "Peak [0–1]"
-    assert win.psth_norm_actions["peak"].isChecked() is True
-    assert win.psth_norm_actions["probability"].isChecked() is False
-
-    # 2. Change from ClusteringView combo -> menu updates
-    win.clustering_view.combo_psth_norm.setCurrentIndex(2)  # Raw
-    assert win.psth_norm_actions["raw"].isChecked() is True
-    assert win.psth_norm_actions["peak"].isChecked() is False
-    assert win.psth_norm_actions["probability"].isChecked() is False
-
-    win.close()

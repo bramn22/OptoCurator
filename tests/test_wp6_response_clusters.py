@@ -16,7 +16,7 @@ from optocurator.ui.view_clusters import (
 
 
 def test_wp6_toolbar_controls_and_menus(qapp):
-    """Verify § 9.1 toolbar widgets, count chip, View Options menu, More menu, and hidden btn_new_cluster."""
+    """Verify § 9.1 toolbar widgets, count chip, View Options menu, and More menu."""
     view = ClusteringView(load_mock=True, start_with_clusters=True)
     qapp.processEvents()
 
@@ -29,7 +29,6 @@ def test_wp6_toolbar_controls_and_menus(qapp):
     assert view.btn_seed_clusters.text() == "Seed clusters"
     assert view.btn_cluster.text() == "Run clustering"
     assert view.btn_reset_clusters.text() == "↻ Reset clustering"
-    assert view.btn_new_cluster.isHidden()
 
     # View Options menu (☰)
     view_menu = view.btn_view_options.menu()
@@ -267,17 +266,27 @@ def test_wp6_card_context_menu_rename_recolor_merge_dissolve_undo(qapp, monkeypa
     view.close()
 
 
-def test_wp6_list_panel_states_collapse_click_and_batch_accept(qapp):
+def test_wp6_list_panel_states_collapse_click_and_batch_accept(qapp, qtbot):
     """Verify § 9.3 list panel collapse, 3 states, 9 columns, click focus, and 'Accept N selected'."""
     view = ClusteringView(load_mock=True, start_with_clusters=True)
-    view.refresh_active_learning(synchronous=True)
-    qapp.processEvents()
+    with qtbot.waitSignal(view.progress_updated, timeout=10000):
+        view.refresh_active_learning()
+    qtbot.waitUntil(
+        lambda: view._active_learning_worker is not None and not view._active_learning_worker.isRunning(),
+        timeout=10000,
+    )
 
     # Ensure some unassigned units exist so list panel is populated
     gids_to_unassign = [view._get_gid_for_row(i) for i in range(3)]
     view.assign_candidate_to_cluster(-1, unit_id=gids_to_unassign)
-    view.refresh_active_learning(synchronous=True)
-    qapp.processEvents()
+    with qtbot.waitSignal(view.progress_updated, timeout=10000):
+        view.refresh_active_learning()
+    qtbot.waitUntil(
+        lambda: view._active_learning_worker is not None
+        and not view._active_learning_worker.isRunning()
+        and view.table_list_panel.rowCount() >= 3,
+        timeout=10000,
+    )
 
     # Collapsible chevron
     view.resize(1400, 900)

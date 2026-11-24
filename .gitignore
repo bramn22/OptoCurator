@@ -44,6 +44,10 @@ Thumbs.db
 docs/review
 docs/ui_overhaul
 
-# OptoCurator artifacts
+# OptoCurator artifacts & local data
 *_plots/
 *.pdf
+*.nwb
+data/
+CITATION.cff
+

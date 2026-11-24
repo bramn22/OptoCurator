@@ -208,11 +208,6 @@ class ActiveLearningSettingsDialog(QDialog):
         layout_feat.addWidget(self.lbl_feat_summary)
 
         feat_row = QHBoxLayout()
-        self.combo_scaling = QComboBox(self)
-        self.combo_scaling.addItem("Standardized (z-score)", "zscore")
-        self.combo_scaling.setToolTip("Features are standardized (zero mean, unit variance) before fitting.")
-        feat_row.addWidget(QLabel("Feature Scaling:", self))
-        feat_row.addWidget(self.combo_scaling)
         feat_row.addStretch()
 
         self.btn_edit_features = QPushButton("Edit Features...", self)
@@ -227,11 +222,6 @@ class ActiveLearningSettingsDialog(QDialog):
         form_rf = QFormLayout(box_rf)
         form_rf.setContentsMargins(12, 14, 12, 12)
         form_rf.setSpacing(8)
-
-        self.combo_uncertainty = QComboBox(self)
-        self.combo_uncertainty.addItem("Entropy (Normalized Shannon Entropy)", "entropy")
-        self.combo_uncertainty.setToolTip("Ranks unassigned units by normalized Shannon entropy of class probabilities.")
-        form_rf.addRow("Uncertainty Measure:", self.combo_uncertainty)
 
         self.spin_n_estimators = QSpinBox(self)
         self.spin_n_estimators.setRange(10, 1000)
@@ -256,20 +246,10 @@ class ActiveLearningSettingsDialog(QDialog):
         self.spin_threshold.setValue(int(round(self._threshold * 100)))
         form_rf.addRow("Confidence Threshold:", self.spin_threshold)
 
-        self.combo_retrain_schedule = QComboBox(self)
-        self.combo_retrain_schedule.addItem("After every curation action (Immediate)", "immediate")
-        form_rf.addRow("Retrain Schedule:", self.combo_retrain_schedule)
-
         self.spin_random_seed = QSpinBox(self)
         self.spin_random_seed.setRange(0, 999999)
         self.spin_random_seed.setValue(self._random_state)
         form_rf.addRow("Random Seed:", self.spin_random_seed)
-
-        self.chk_balanced_weights = QCheckBox("Balance class weights (class_weight='balanced')", self)
-        self.chk_balanced_weights.setChecked(True)
-        self.chk_balanced_weights.setEnabled(False)
-        self.chk_balanced_weights.setToolTip("Random Forest always uses balanced class weights in OptoCurator.")
-        form_rf.addRow("", self.chk_balanced_weights)
 
         layout.addWidget(box_rf)
 

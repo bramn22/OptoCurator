@@ -89,10 +89,15 @@ def test_classification_progress_bar_widget(qapp):
     assert not prog.seg_unassigned.isHidden()
     prog.close()
 
-def test_active_learning_ux_integration(qapp, monkeypatch):
+def test_active_learning_ux_integration(qapp, qtbot, monkeypatch):
     """Verify ClusteringView updates progress bar and probability displays when running active learning."""
     # Start clustering view with mock data
     view = ClusteringView(load_mock=True, start_with_clusters=True)
+    qtbot.waitUntil(
+        lambda: (view._active_learning_worker is None or not view._active_learning_worker.isRunning())
+        and view.active_candidate is not None,
+        timeout=10000,
+    )
     assert hasattr(view, "progress_bar")
     assert hasattr(view, "cluster_prob_bar")
 
@@ -106,7 +111,6 @@ def test_active_learning_ux_integration(qapp, monkeypatch):
         session_id=str(rec.get("session_id", "mock_sess")),
         unit_id=int(rec.get("unit_id", 1)),
         entropy=0.98,
-        depth=600.0,
         probabilities={0: 0.88, 1: 0.12},
         feature_values={"latency_ms": 3.8, "reliability": 0.9},
     )
@@ -136,10 +140,21 @@ def test_active_learning_ux_integration(qapp, monkeypatch):
     # Assign candidate to cluster 0 and check loop update
     view.assign_candidate_to_cluster(0, target_gid)
     assert view._unit_status_map.get(target_gid) == "Curated"
+    qtbot.waitUntil(
+        lambda: (view._active_learning_worker is None or not view._active_learning_worker.isRunning())
+        and view.progress_bar.curated_count >= 1,
+        timeout=10000,
+    )
     assert view.progress_bar.curated_count >= 1
 
     # Reset clustering and verify progress bar resets
     view.reset_to_unassigned()
+    qtbot.waitUntil(
+        lambda: (view._active_learning_worker is None or not view._active_learning_worker.isRunning())
+        and view.progress_bar.curated_count == 0
+        and len(view.cluster_prob_bar.bar_items) == 0,
+        timeout=10000,
+    )
     assert view.progress_bar.curated_count == 0
     assert view.progress_bar.auto_count == 0
     assert len(view.cluster_prob_bar.bar_items) == 0
@@ -290,9 +305,14 @@ def test_toggle_active_learning_mode_and_sequential_advancement(qapp):
 
     view.close()
 
-def test_return_to_active_candidate_button(qapp):
+def test_return_to_active_candidate_button(qapp, qtbot):
     """Verify returning to suggested active learning cell via btn_return_to_candidate after inspecting other rows."""
     view = ClusteringView(load_mock=True, start_with_clusters=True)
+    qtbot.waitUntil(
+        lambda: (view._active_learning_worker is None or not view._active_learning_worker.isRunning())
+        and view.active_candidate is not None,
+        timeout=10000,
+    )
     assert view.active_candidate is not None
     cand_gid = view.active_candidate.global_unit_id
 
@@ -448,12 +468,15 @@ def test_auto_assignment_card_count_synchronization_and_revert(qapp):
     assert c0_card is not None
     initial_c0_count = c0_card.count
 
-    # Simulate auto-assignment of 5 units to cluster 0
+    # Simulate auto-assignment of 5 unassigned units to cluster 0
     unassigned_gids = [
         gid for gid, rec in view._pooled_units_map.items()
         if rec.get("cluster_id", -1) != 0 and view._unit_status_map.get(gid) != "Curated"
     ][:5]
     assert len(unassigned_gids) == 5
+    for gid in unassigned_gids:
+        view._pooled_units_map[gid]["cluster_id"] = -1
+        view._unit_status_map[gid] = "Unassigned"
 
     auto_dict = {gid: 0 for gid in unassigned_gids}
     confs = {gid: 0.95 for gid in unassigned_gids}
@@ -479,45 +502,6 @@ def test_auto_assignment_card_count_synchronization_and_revert(qapp):
     # Test toggling chk_auto_assign
     view.chk_auto_assign.setChecked(False)
     assert view.auto_assign_enabled is False
-
-    view.close()
-
-
-def test_manual_assignment_excludes_from_suggested_candidates(qapp):
-    """Verify that when a cell is manually added to a cluster, it is excluded from suggested candidates for that cluster."""
-    view = ClusteringView(load_mock=True, start_with_clusters=True)
-    view.set_cluster_comparison(0)
-    qapp.processEvents()
-
-    # Find a candidate unit from suggested candidates
-    suggestions_before = view._current_suggested_candidates
-    assert len(suggestions_before) > 0, "Expected suggestions before assignment"
-    target_cand = suggestions_before[0]
-    target_gid = target_cand["global_unit_id"]
-
-    # Assign this candidate to cluster 0 manually
-    success = view.assign_candidate_to_cluster(0, unit_id=target_gid)
-    assert success is True
-    qapp.processEvents()
-
-    # Verify target_gid is now in CURATED MEMBERS
-    member_gids = [
-        gid for gid, rec in view._pooled_units_map.items()
-        if rec.get("cluster_id") == 0
-    ]
-    assert target_gid in member_gids
-    assert view._unit_status_map[target_gid] == "Curated"
-
-    # Verify target_gid is strictly absent from suggested candidates
-    suggestions_after = view._current_suggested_candidates
-    suggested_gids_after = [c["global_unit_id"] for c in suggestions_after]
-    assert target_gid not in suggested_gids_after, f"Unit {target_gid} should not be in suggested candidates after being manually added to cluster 0"
-
-    # Also verify in the UI table
-    for r in range(view.table_suggested_candidates.rowCount()):
-        item = view.table_suggested_candidates.item(r, 0)
-        assert item is not None
-        assert item.data(Qt.ItemDataRole.UserRole) != target_gid
 
     view.close()
 
@@ -601,5 +585,53 @@ def test_auto_assigned_cells_visible_in_cluster_inspector(qapp):
         assert len(view.comparison_viewers) == len(expected_members)
         assert other_gid in view._comparison_member_viewers_map
         assert curated_gid in view._comparison_member_viewers_map
+    finally:
+        view.close()
+
+
+def test_async_queue_advances_immediately_and_syncs_on_assign_and_skip(qapp, qtbot):
+    """In production async mode, assign and skip in queue focus must advance immediately and sync with worker results (Bug UI3)."""
+    view = ClusteringView(load_mock=True, start_with_clusters=True)
+    try:
+        qtbot.waitUntil(
+            lambda: (view._active_learning_worker is None or not view._active_learning_worker.isRunning())
+            and view.active_candidate is not None
+            and len(view.ranked_candidates) >= 3,
+            timeout=10000,
+        )
+
+        # 1. Focus top active-learning queue candidate and Skip in default async mode
+        cand0 = view.active_candidate
+        assert cand0 is not None
+        view.select_pooled_unit(cand0.global_unit_id, source="queue")
+        assert view._current_selected_gid == cand0.global_unit_id
+
+        view.skip_current_candidate()
+        assert view._current_selected_gid != cand0.global_unit_id
+
+        qtbot.waitUntil(
+            lambda: view._active_learning_worker is None or not view._active_learning_worker.isRunning(),
+            timeout=10000,
+        )
+        qapp.processEvents()
+        assert view.active_candidate is not None
+        assert view._current_selected_gid == view.active_candidate.global_unit_id
+        assert view._current_selected_gid != cand0.global_unit_id
+
+        # 2. Assign current queue candidate to Cluster 0 in default async mode
+        cand1 = view.active_candidate
+        view.select_pooled_unit(cand1.global_unit_id, source="queue")
+        assert view.assign_candidate_to_cluster(0) is True
+        assert view._unit_status_map[cand1.global_unit_id] == "Curated"
+        assert view._current_selected_gid != cand1.global_unit_id
+
+        qtbot.waitUntil(
+            lambda: view._active_learning_worker is None or not view._active_learning_worker.isRunning(),
+            timeout=10000,
+        )
+        qapp.processEvents()
+        assert view.active_candidate is not None
+        assert view._current_selected_gid == view.active_candidate.global_unit_id
+        assert view._current_selected_gid != cand1.global_unit_id
     finally:
         view.close()

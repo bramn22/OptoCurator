@@ -1,8 +1,23 @@
 """Core data structures and contracts for OptoCurator."""
 
 from dataclasses import dataclass
+import math
 from typing import Optional, Tuple
 import numpy as np
+
+MISSING_METRIC_SENTINEL: float = 999.0
+DEFAULT_SAMPLING_RATE_HZ: float = 30000.0
+DEFAULT_PULSE_DURATION_MS: float = 10.0
+DEFAULT_PULSE_DURATION_S: float = DEFAULT_PULSE_DURATION_MS / 1000.0
+
+
+def is_valid_metric_value(val: float) -> bool:
+    """Return True when a scalar latency/jitter metric is finite and below the missing sentinel."""
+    try:
+        f = float(val)
+    except (TypeError, ValueError):
+        return False
+    return math.isfinite(f) and f < (MISSING_METRIC_SENTINEL - 1.0)
 
 
 @dataclass
@@ -15,7 +30,7 @@ class UnitData:
     channel: int = 0
     depth: float = 0.0
     probe_x: float = 0.0
-    waveforms: Optional[np.ndarray] = None  # shape: (n_spikes, n_samples) or mean template
+    waveforms: Optional[np.ndarray] = None  # shape: (n_spikes, n_samples); 2D array per spike
 
     @property
     def global_id(self) -> str:
@@ -93,11 +108,6 @@ class StatsParameters:
     wf_window_start_ms: float = -1.0
     wf_window_end_ms: float = 2.0
     wf_max_spikes: int = 40
-
-    # PSTH
-    psth_bin_size_ms: float = 2.0
-    psth_baseline_start_ms: float = -50.0
-    psth_baseline_end_ms: float = 0.0
 
     @classmethod
     def default(cls) -> "StatsParameters":

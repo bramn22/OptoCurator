@@ -3,7 +3,7 @@
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from PyQt6.QtCore import QEvent, QObject, QPoint, QRectF, QSettings, QSize, Qt
-from PyQt6.QtGui import QAction, QActionGroup, QColor, QFont, QFontMetrics, QIcon, QKeySequence, QPainter, QPen, QPixmap
+from PyQt6.QtGui import QAction, QColor, QFont, QFontMetrics, QIcon, QKeySequence, QPainter, QPen, QPixmap
 from PyQt6.QtWidgets import (
     QAbstractButton,
     QApplication,
@@ -12,7 +12,6 @@ from PyQt6.QtWidgets import (
     QFileDialog,
     QFrame,
     QHBoxLayout,
-    QInputDialog,
     QLabel,
     QMainWindow,
     QMenu,
@@ -29,7 +28,6 @@ from PyQt6.QtWidgets import (
 
 from optocurator import __version__
 from optocurator.models import StatsParameters
-from optocurator.ui.dialog_clustering import HierarchicalClusteringDialog
 from optocurator.ui.dialog_stats import StatsParametersDialog
 from optocurator.ui.theme import (
     CLUSTERS_PROGRESS_BAR_CONTAINER_STYLE,
@@ -377,7 +375,6 @@ class MainWindow(QMainWindow):
         self.detection_view = DetectionView(self)
         self.detection_view.request_home.connect(self.switch_to_launcher)
         self.detection_view.request_clustering_view.connect(self.switch_to_clustering)
-        self.detection_view.view_settings_changed.connect(self._on_detection_view_settings_changed)
         if hasattr(self.detection_view, "dirty_changed"):
             self.detection_view.dirty_changed.connect(self._on_workspace_dirty_changed)
         if hasattr(self.detection_view, "session_changed"):
@@ -394,9 +391,6 @@ class MainWindow(QMainWindow):
         self.clustering_view.experiment_removed.connect(self._on_clustering_experiment_removed)
         self.clustering_view.experiments_changed.connect(self._update_header_experiments_button)
         self.clustering_view.progress_updated.connect(self.header_progress_bar.update_counts)
-        self.clustering_view.view_settings_changed.connect(self._on_clustering_view_settings_changed)
-        self.clustering_view.bin_size_changed.connect(self._sync_cluster_bin_menu_actions)
-        self.clustering_view.psth_norm_mode_changed.connect(self._sync_cluster_psth_norm_menu_actions)
         self.clustering_view.dirty_changed.connect(self._on_workspace_dirty_changed)
         self.clustering_view.confidence_threshold_changed.connect(self._on_confidence_threshold_changed)
         self.clustering_view.auto_assign_changed.connect(self._on_clustering_auto_assign_changed)
@@ -559,9 +553,6 @@ class MainWindow(QMainWindow):
         self.act_reset_phase2_layout = self.act_reset_panel_layout
         self.view_menu.addAction(self.act_reset_panel_layout)
 
-        # Unattached legacy View actions kept for backward-compatible attribute access
-        self._init_legacy_view_actions()
-
         # --- Stats Menu (Detection mode, § 13.3, § 13.8) ---
         self.stats_menu = menubar.addMenu("Stats")
         self.act_stats_params = QAction("Metric parameters…", self)
@@ -668,110 +659,6 @@ class MainWindow(QMainWindow):
         self.act_about = QAction("About OptoCurator", self)
         self.act_about.triggered.connect(self._show_about_dialog)
         self.help_menu.addAction(self.act_about)
-
-    def _init_legacy_view_actions(self) -> None:
-        """Create unattached compatibility QActions referenced by older tests."""
-        self.group_window = QActionGroup(self)
-        self.group_window.setExclusive(True)
-        self.window_actions: Dict[Tuple[float, float], QAction] = {}
-        for text, win, default_chk in (
-            ("[-30 ms, +50 ms] (Default)", (-30.0, 50.0), True),
-            ("[-10 ms, +30 ms]", (-10.0, 30.0), False),
-            ("[-50 ms, +50 ms]", (-50.0, 50.0), False),
-            ("[-20 ms, +40 ms]", (-20.0, 40.0), False),
-            ("[-100 ms, +100 ms]", (-100.0, 100.0), False),
-        ):
-            act = QAction(text, self)
-            act.setCheckable(True)
-            act.setChecked(default_chk)
-            act.triggered.connect(lambda _checked=False, w=win: self._on_select_window(w))
-            self.group_window.addAction(act)
-            self.window_actions[win] = act
-
-        self.group_cluster_bin = QActionGroup(self)
-        self.group_cluster_bin.setExclusive(True)
-        self.cluster_bin_actions: Dict[float, QAction] = {}
-        for text, bin_val, default_chk in (
-            ("0.5 ms", 0.5, False),
-            ("1.0 ms", 1.0, False),
-            ("2.0 ms (Default)", 2.0, True),
-            ("5.0 ms", 5.0, False),
-            ("10.0 ms", 10.0, False),
-        ):
-            act = QAction(text, self)
-            act.setCheckable(True)
-            act.setChecked(default_chk)
-            act.triggered.connect(lambda _checked=False, b=bin_val: self._on_select_cluster_bin_size(b))
-            self.group_cluster_bin.addAction(act)
-            self.cluster_bin_actions[bin_val] = act
-
-        self.act_smooth_toggle = QAction("Enable Gaussian Smoothing", self)
-        self.act_smooth_toggle.setCheckable(True)
-        self.act_smooth_toggle.setChecked(True)
-        self.act_smooth_toggle.triggered.connect(self._on_toggle_psth_smoothing)
-
-        self.group_sigma = QActionGroup(self)
-        self.group_sigma.setExclusive(True)
-        self.sigma_actions: Dict[float, QAction] = {}
-        for text, sigma_val, default_chk in (
-            ("0.5 ms", 0.5, False),
-            ("1.0 ms", 1.0, False),
-            ("2.0 ms (Default)", 2.0, True),
-            ("5.0 ms", 5.0, False),
-            ("10.0 ms", 10.0, False),
-        ):
-            act = QAction(text, self)
-            act.setCheckable(True)
-            act.setChecked(default_chk)
-            act.triggered.connect(lambda _checked=False, s=sigma_val: self._on_select_psth_sigma(s))
-            self.group_sigma.addAction(act)
-            self.sigma_actions[sigma_val] = act
-
-        self.group_psth_norm = QActionGroup(self)
-        self.group_psth_norm.setExclusive(True)
-        self.psth_norm_actions: Dict[str, QAction] = {}
-        for text, mode_val, default_chk in (
-            ("Peak Normalized [0–1]", "peak", False),
-            ("Probability (Area = 1)", "probability", True),
-            ("Raw Firing Rate (Hz)", "raw", False),
-        ):
-            act = QAction(text, self)
-            act.setCheckable(True)
-            act.setChecked(default_chk)
-            act.triggered.connect(lambda _checked=False, m=mode_val: self._on_select_cluster_psth_norm(m))
-            self.group_psth_norm.addAction(act)
-            self.psth_norm_actions[mode_val] = act
-
-        self.group_order = QActionGroup(self)
-        self.group_order.setExclusive(True)
-        self.act_order_pres = QAction("Order by Presentation", self)
-        self.act_order_pres.setCheckable(True)
-        self.act_order_pres.setChecked(True)
-        self.act_order_pres.triggered.connect(lambda: self._on_select_ordering("presentation"))
-        self.group_order.addAction(self.act_order_pres)
-
-        self.act_order_lat = QAction("Order by First-Spike Latency", self)
-        self.act_order_lat.setCheckable(True)
-        self.act_order_lat.setChecked(False)
-        self.act_order_lat.triggered.connect(lambda: self._on_select_ordering("latency"))
-        self.group_order.addAction(self.act_order_lat)
-
-        self.group_marker_size = QActionGroup(self)
-        self.group_marker_size.setExclusive(True)
-        self.raster_marker_actions: Dict[float, QAction] = {}
-        for text, size_val, default_chk in (
-            ("1 px (Tiny)", 1.0, False),
-            ("2 px (Small)", 2.0, False),
-            ("3 px (Default)", 3.0, True),
-            ("5 px (Medium)", 5.0, False),
-            ("8 px (Large)", 8.0, False),
-        ):
-            act = QAction(text, self)
-            act.setCheckable(True)
-            act.setChecked(default_chk)
-            act.triggered.connect(lambda _checked=False, s=size_val: self._on_select_marker_size(s))
-            self.group_marker_size.addAction(act)
-            self.raster_marker_actions[size_val] = act
 
     def _init_statusbar(self) -> None:
         """Initialize 24 px status bar (§ 11.2, § 13.7)."""
@@ -1057,52 +944,14 @@ class MainWindow(QMainWindow):
         self.stack.setCurrentIndex(self.VIEW_DETECTION)
         self._sync_header_for_mode(self.VIEW_DETECTION)
         self.status.clearMessage()
-        if hasattr(self, "window_actions") and hasattr(self.detection_view, "current_window_ms"):
-            for win, act in self.window_actions.items():
-                act.setChecked(win == self.detection_view.current_window_ms)
-        if hasattr(self, "act_order_pres") and hasattr(self, "act_order_lat"):
-            order_by = getattr(self.detection_view, "raster_order_by", "presentation")
-            self.act_order_pres.setChecked(order_by == "presentation")
-            self.act_order_lat.setChecked(order_by == "latency")
         self._ensure_workspace_maximized()
-        if hasattr(self, "raster_marker_actions"):
-            current_size = getattr(self.detection_view, "raster_marker_size", 3.0)
-            for size_val, act in self.raster_marker_actions.items():
-                act.setChecked(abs(size_val - current_size) < 1e-4)
-        if hasattr(self, "act_smooth_toggle"):
-            self.act_smooth_toggle.setChecked(getattr(self.detection_view, "psth_smooth", True))
-        if hasattr(self, "sigma_actions"):
-            current_sigma = getattr(self.detection_view, "psth_gaussian_sigma_ms", 2.0)
-            for size_val, act in self.sigma_actions.items():
-                act.setChecked(abs(size_val - current_sigma) < 1e-4)
 
     def switch_to_clustering(self) -> None:
         """Switch central view to Response Clustering."""
         self.stack.setCurrentIndex(self.VIEW_CLUSTERING)
         self._sync_header_for_mode(self.VIEW_CLUSTERING)
         self.status.clearMessage()
-        if hasattr(self, "window_actions") and hasattr(self.clustering_view, "current_window_ms"):
-            for win, act in self.window_actions.items():
-                act.setChecked(win == self.clustering_view.current_window_ms)
-        if hasattr(self, "act_order_pres") and hasattr(self, "act_order_lat"):
-            order_by = getattr(self.clustering_view, "raster_order_by", "presentation")
-            self.act_order_pres.setChecked(order_by == "presentation")
-            self.act_order_lat.setChecked(order_by == "latency")
         self._ensure_workspace_maximized()
-        if hasattr(self, "raster_marker_actions"):
-            current_size = getattr(self.clustering_view, "raster_marker_size", 3.0)
-            for size_val, act in self.raster_marker_actions.items():
-                act.setChecked(abs(size_val - current_size) < 1e-4)
-        if hasattr(self, "act_smooth_toggle"):
-            self.act_smooth_toggle.setChecked(getattr(self.clustering_view, "psth_smooth", True))
-        if hasattr(self, "sigma_actions"):
-            current_sigma = getattr(self.clustering_view, "psth_gaussian_sigma_ms", 2.0)
-            for size_val, act in self.sigma_actions.items():
-                act.setChecked(abs(size_val - current_sigma) < 1e-4)
-        if hasattr(self, "psth_norm_actions") and hasattr(self.clustering_view, "cluster_psth_norm"):
-            current_norm = getattr(self.clustering_view, "cluster_psth_norm", "probability")
-            for mode_val, act in self.psth_norm_actions.items():
-                act.setChecked(mode_val == current_norm)
 
     # --- Recent Projects / Sessions (QSettings) ---
 
@@ -1152,6 +1001,8 @@ class MainWindow(QMainWindow):
 
     def _open_recent_clustering_project(self, project_dir: str) -> None:
         """Open a recent clustering project folder."""
+        if not self._confirm_discard_clustering_changes("opening a recent project"):
+            return
         if self.stack.currentIndex() != self.VIEW_CLUSTERING:
             self.switch_to_clustering()
         ok = self.clustering_view.load_project(project_dir)
@@ -1162,6 +1013,8 @@ class MainWindow(QMainWindow):
 
     def _open_recent_detection_folder(self, folder_path: str) -> None:
         """Open a recent detection experiment folder or NWB file."""
+        if not self._confirm_discard_detection_changes("opening a recent session"):
+            return
         self.switch_to_detection()
         p = Path(folder_path)
         if p.suffix.lower() == ".nwb":
@@ -1177,6 +1030,8 @@ class MainWindow(QMainWindow):
 
     def _on_load_nwb_file(self, *args: Any, **kwargs: Any) -> None:
         """File selection dialog for loading an NWB session in Detection mode."""
+        if not self._confirm_discard_detection_changes("loading an NWB file"):
+            return
         self.switch_to_detection()
         ok = self.detection_view.load_nwb_file()
         if ok:
@@ -1190,6 +1045,8 @@ class MainWindow(QMainWindow):
 
     def _on_load_experiment_folder(self, *args: Any, **kwargs: Any) -> None:
         """Folder selection dialog for single-session detection."""
+        if not self._confirm_discard_detection_changes("loading an experiment folder"):
+            return
         self.switch_to_detection()
         ok = self.detection_view.load_experiment_folder()
         if ok:
@@ -1209,22 +1066,31 @@ class MainWindow(QMainWindow):
             self._update_status_save_indicator()
             self.status.clearMessage()
 
+    def _confirm_discard_detection_changes(self, action_verb: str = "closing") -> bool:
+        """Prompt to save unsaved detection changes before discarding; return True to proceed."""
+        if not bool(getattr(self.detection_view, "_is_dirty", False)):
+            return True
+        reply = QMessageBox.question(
+            self,
+            "Unsaved Changes",
+            f"You have unsaved changes in this detection session. Save before {action_verb}?",
+            QMessageBox.StandardButton.Save
+            | QMessageBox.StandardButton.Discard
+            | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Save,
+        )
+        if reply == QMessageBox.StandardButton.Cancel:
+            return False
+        if reply == QMessageBox.StandardButton.Save:
+            self._on_save_detection_session()
+            if bool(getattr(self.detection_view, "_is_dirty", False)):
+                return False
+        return True
+
     def _on_close_detection_session(self) -> None:
         """Close current detection session, prompting to save if dirty (§ 13.3)."""
-        if bool(getattr(self.detection_view, "_is_dirty", False)):
-            reply = QMessageBox.question(
-                self,
-                "Unsaved Changes",
-                "You have unsaved changes in this detection session. Save before closing?",
-                QMessageBox.StandardButton.Save
-                | QMessageBox.StandardButton.Discard
-                | QMessageBox.StandardButton.Cancel,
-                QMessageBox.StandardButton.Save,
-            )
-            if reply == QMessageBox.StandardButton.Cancel:
-                return
-            if reply == QMessageBox.StandardButton.Save:
-                self._on_save_detection_session()
+        if not self._confirm_discard_detection_changes("closing"):
+            return
         if hasattr(self.detection_view, "close_session"):
             self.detection_view.close_session()
         else:
@@ -1263,10 +1129,6 @@ class MainWindow(QMainWindow):
         self.status.showMessage(
             f"Removed experiment '{session_id}'. Remaining experiments: {n_exps} | Pooled units: {n_units}"
         )
-
-    def _on_export_detection(self, *args: Any, **kwargs: Any) -> None:
-        """Compatibility wrapper for detection save."""
-        self._on_save_detection_session()
 
     def _on_save_session(self, *args: Any, **kwargs: Any) -> None:
         """Context-dependent save action."""
@@ -1488,173 +1350,6 @@ class MainWindow(QMainWindow):
             bool(getattr(self.clustering_view, "shared_y_axis_enabled", False))
         )
 
-    def _on_select_window(self, window_ms: Tuple[float, float]) -> None:
-        """Change visualized window in active workspace view."""
-        if self.stack.currentIndex() == self.VIEW_CLUSTERING:
-            self.clustering_view.set_visualized_window(window_ms)
-            self.status.showMessage(f"Phase 2 visualized window set to [{window_ms[0]:.0f} ms, +{window_ms[1]:.0f} ms]")
-        else:
-            if self.stack.currentIndex() != self.VIEW_DETECTION:
-                self.switch_to_detection()
-            self.detection_view.set_visualized_window(window_ms)
-            self.status.clearMessage()
-
-    def _on_custom_window(self) -> None:
-        """Open custom window dialog in active workspace view."""
-        if self.stack.currentIndex() == self.VIEW_CLUSTERING:
-            self.clustering_view.prompt_custom_window()
-        else:
-            if self.stack.currentIndex() != self.VIEW_DETECTION:
-                self.switch_to_detection()
-            self.detection_view.prompt_custom_window()
-
-    def _on_select_ordering(self, order_by: str) -> None:
-        """Change pulse ordering in active workspace view."""
-        if self.stack.currentIndex() == self.VIEW_CLUSTERING:
-            self.clustering_view.set_pulse_ordering(order_by)
-            desc = "Latency to First Spike" if order_by == "latency" else "Presentation Order"
-            self.status.showMessage(f"Optogenetic pulse ordering set to: {desc}")
-        else:
-            if self.stack.currentIndex() != self.VIEW_DETECTION:
-                self.switch_to_detection()
-            self.detection_view.set_pulse_ordering(order_by)
-            self.status.clearMessage()
-
-    def _on_detection_view_settings_changed(
-        self, window_ms: Tuple[float, float], order_by: str
-    ) -> None:
-        """Synchronize menubar actions when settings change from within DetectionView."""
-        if hasattr(self, "window_actions"):
-            for win, act in self.window_actions.items():
-                act.setChecked(win == window_ms)
-        if hasattr(self, "act_order_pres") and hasattr(self, "act_order_lat"):
-            self.act_order_pres.setChecked(order_by == "presentation")
-            self.act_order_lat.setChecked(order_by == "latency")
-        if hasattr(self, "raster_marker_actions"):
-            current_size = self.detection_view.raster_marker_size
-            for size_val, act in self.raster_marker_actions.items():
-                act.setChecked(abs(size_val - current_size) < 1e-4)
-
-    def _on_clustering_view_settings_changed(self, window_ms: Tuple[float, float]) -> None:
-        """Synchronize menubar actions when settings change from within ClusteringView."""
-        if hasattr(self, "window_actions"):
-            for win, act in self.window_actions.items():
-                act.setChecked(win == window_ms)
-        if hasattr(self, "act_order_pres") and hasattr(self, "act_order_lat"):
-            order_by = getattr(self.clustering_view, "raster_order_by", "presentation")
-            self.act_order_pres.setChecked(order_by == "presentation")
-            self.act_order_lat.setChecked(order_by == "latency")
-        self._ensure_workspace_maximized()
-        if hasattr(self, "raster_marker_actions"):
-            current_size = getattr(self.clustering_view, "raster_marker_size", 3.0)
-            for size_val, act in self.raster_marker_actions.items():
-                act.setChecked(abs(size_val - current_size) < 1e-4)
-
-    def _on_select_cluster_bin_size(self, bin_size_ms: float) -> None:
-        """Handle selection of preset cluster PSTH bin size."""
-        if self.stack.currentIndex() != self.VIEW_CLUSTERING:
-            self.switch_to_clustering()
-        self.clustering_view.set_cluster_bin_size(bin_size_ms)
-        self._sync_cluster_bin_menu_actions(bin_size_ms)
-        self.status.showMessage(f"Cluster PSTH bin size set to {bin_size_ms:.1f} ms")
-
-    def _on_custom_cluster_bin_size(self) -> None:
-        """Prompt user for a custom cluster PSTH bin size."""
-        if self.stack.currentIndex() != self.VIEW_CLUSTERING:
-            self.switch_to_clustering()
-        current_val = self.clustering_view.current_bin_size_ms
-        val, ok = QInputDialog.getDouble(
-            self,
-            "Custom Cluster Bin Size",
-            "Histogram bin width (ms):",
-            value=current_val,
-            min=0.2,
-            max=50.0,
-            decimals=1,
-        )
-        if ok:
-            self._on_select_cluster_bin_size(val)
-
-    def _sync_cluster_bin_menu_actions(self, bin_size_ms: float) -> None:
-        """Update checkmarks on Cluster PSTH Bin Size menu presets."""
-        if hasattr(self, "cluster_bin_actions"):
-            for preset_val, act in self.cluster_bin_actions.items():
-                act.setChecked(abs(preset_val - bin_size_ms) < 1e-4)
-
-    def _on_toggle_psth_smoothing(self, enabled: bool) -> None:
-        """Toggle Gaussian firing rate PSTH smoothing across workspace views."""
-        self.detection_view.set_psth_smooth(enabled)
-        self.clustering_view.set_psth_smooth(enabled)
-        status = "enabled" if enabled else "disabled"
-        self.status.showMessage(f"Gaussian firing rate PSTH smoothing {status}")
-
-    def _on_select_psth_sigma(self, sigma_ms: float) -> None:
-        """Set Gaussian kernel standard deviation sigma across workspace views."""
-        self.detection_view.set_psth_gaussian_sigma(sigma_ms)
-        self.clustering_view.set_psth_gaussian_sigma(sigma_ms)
-        self._sync_psth_sigma_menu_actions(sigma_ms)
-        self.status.showMessage(f"PSTH Gaussian smoothing kernel σ set to {sigma_ms:.1f} ms")
-
-    def _sync_psth_sigma_menu_actions(self, sigma_ms: float) -> None:
-        """Synchronize checked state of Gaussian kernel sigma preset actions."""
-        if hasattr(self, "sigma_actions"):
-            for val, act in self.sigma_actions.items():
-                act.setChecked(abs(val - sigma_ms) < 1e-4)
-
-    def _on_custom_psth_sigma(self) -> None:
-        """Prompt user for a custom Gaussian smoothing kernel sigma."""
-        current_val = getattr(self.clustering_view, "psth_gaussian_sigma_ms", 2.0)
-        val, ok = QInputDialog.getDouble(
-            self,
-            "Custom Gaussian Kernel Sigma",
-            "Gaussian kernel standard deviation σ (ms):",
-            value=current_val,
-            min=0.2,
-            max=50.0,
-            decimals=1,
-        )
-        if ok:
-            self._on_select_psth_sigma(val)
-
-    def _on_select_cluster_psth_norm(self, mode: str) -> None:
-        """Handle selection of Cluster PSTH Normalization mode."""
-        if self.stack.currentIndex() != self.VIEW_CLUSTERING:
-            self.switch_to_clustering()
-        self.clustering_view.set_psth_norm_mode(mode)
-        self._sync_cluster_psth_norm_menu_actions(mode)
-        labels = {
-            "peak": "Peak Normalized [0–1]",
-            "probability": "Probability (Area = 1)",
-            "raw": "Raw Firing Rate (Hz)",
-        }
-        self.status.showMessage(f"Cluster PSTH normalization set to: {labels.get(mode, mode)}")
-
-    def _sync_cluster_psth_norm_menu_actions(self, mode: str) -> None:
-        """Update checkmarks on Cluster PSTH Normalization menu presets."""
-        if hasattr(self, "psth_norm_actions"):
-            for m_val, act in self.psth_norm_actions.items():
-                act.setChecked(m_val == mode)
-
-    def _on_select_marker_size(self, size: float) -> None:
-        """Update raster marker size in active workspace view."""
-        if self.stack.currentIndex() == self.VIEW_CLUSTERING:
-            self.clustering_view.set_raster_marker_size(size)
-            self.status.showMessage(f"Raster marker size set to {size:.1f} px")
-        else:
-            if self.stack.currentIndex() != self.VIEW_DETECTION:
-                self.switch_to_detection()
-            self.detection_view.set_raster_marker_size(size)
-            self.status.clearMessage()
-
-    def _on_custom_marker_size(self) -> None:
-        """Prompt dialog for custom raster marker size in active workspace view."""
-        if self.stack.currentIndex() == self.VIEW_CLUSTERING:
-            self.clustering_view.prompt_custom_marker_size()
-        else:
-            if self.stack.currentIndex() != self.VIEW_DETECTION:
-                self.switch_to_detection()
-            self.detection_view.prompt_custom_marker_size()
-
     def _on_reset_phase2_layout(self) -> None:
         """Reset panel layout to default for the active workspace view (§ 11.1, § 13.3)."""
         if self.stack.currentIndex() == self.VIEW_DETECTION:
@@ -1680,61 +1375,47 @@ class MainWindow(QMainWindow):
             self.detection_view.update_stats_parameters(new_params)
             self.status.clearMessage()
 
-    def _on_feature_settings(self, *args: Any, **kwargs: Any) -> None:
-        """Launch feature space and weights configuration dialog."""
+    def _ensure_clustering_view(self):
+        """Switch to the Phase 2 ClusteringView if needed and return it."""
         if self.stack.currentIndex() != self.VIEW_CLUSTERING:
             self.switch_to_clustering()
-        self.clustering_view.prompt_feature_settings()
+        return self.clustering_view
+
+    def _on_feature_settings(self, *args: Any, **kwargs: Any) -> None:
+        """Launch feature space and weights configuration dialog."""
+        self._ensure_clustering_view().prompt_feature_settings()
 
     def _on_embedding_settings(self, *args: Any, **kwargs: Any) -> None:
         """Launch 2D embedding (PCA / UMAP) configuration dialog."""
-        if self.stack.currentIndex() != self.VIEW_CLUSTERING:
-            self.switch_to_clustering()
-        self.clustering_view.prompt_embedding_settings()
+        self._ensure_clustering_view().prompt_embedding_settings()
 
     def _on_seed_clusters(self, *args: Any, **kwargs: Any) -> None:
         """Launch Affinity Propagation cluster seeding dialog."""
-        if self.stack.currentIndex() != self.VIEW_CLUSTERING:
-            self.switch_to_clustering()
-        self.clustering_view.prompt_seed_clusters()
+        self._ensure_clustering_view().prompt_seed_clusters()
 
     def _on_customize_clusters(self, *args: Any, **kwargs: Any) -> None:
         """Launch customize clusters dialog."""
-        if self.stack.currentIndex() != self.VIEW_CLUSTERING:
-            self.switch_to_clustering()
-        self.clustering_view.prompt_customize_clusters()
+        self._ensure_clustering_view().prompt_customize_clusters()
 
     def _on_hierarchical_clustering(self, *args: Any, **kwargs: Any) -> None:
-        """Launch response clustering configuration dialog."""
-        if self.stack.currentIndex() != self.VIEW_CLUSTERING:
-            self.switch_to_clustering()
-        dlg = HierarchicalClusteringDialog(
-            current_params=self.clustering_view.active_clustering_params,
-            feature_config=self.clustering_view.feature_config,
-            parent=self,
-        )
-        if dlg.exec():
-            new_params = dlg.get_parameters()
-            self.clustering_view.active_clustering_params = new_params
-            self.clustering_view.feature_config = dlg.get_feature_configuration()
-            self.clustering_view.active_clustering_params.feature_config = self.clustering_view.feature_config
-            ok = self.clustering_view.run_clustering(new_params)
-            if ok:
-                n_units = len(self.clustering_view._pooled_rows)
-                n_clusters = (
-                    len(self.clustering_view.current_clustering_result.cluster_summaries)
-                    if self.clustering_view.current_clustering_result
-                    else 0
-                )
-                self.status.showMessage(
-                    f"Clustered {n_units} units into {n_clusters} response types ({new_params.algorithm})."
-                )
+        """Launch response clustering configuration dialog via ClusteringView."""
+        view = self._ensure_clustering_view()
+        ok = view.prompt_hierarchical_clustering()
+        if ok:
+            n_units = len(view._pooled_rows)
+            n_clusters = (
+                len(view.current_clustering_result.cluster_summaries)
+                if view.current_clustering_result
+                else 0
+            )
+            alg = view.active_clustering_params.algorithm
+            self.status.showMessage(
+                f"Clustered {n_units} units into {n_clusters} response types ({alg})."
+            )
 
     def _on_reset_clustering(self, *args: Any, **kwargs: Any) -> None:
         """Trigger Reset Clustering in Phase 2 view."""
-        if self.stack.currentIndex() != self.VIEW_CLUSTERING:
-            self.switch_to_clustering()
-        self.clustering_view.reset_clustering(confirm=True)
+        self._ensure_clustering_view().reset_clustering(confirm=True)
 
     def _show_about_dialog(self, *args: Any, **kwargs: Any) -> None:
         """Show about information."""
@@ -1795,8 +1476,22 @@ class MainWindow(QMainWindow):
             "  title   = {OptoCurator: Statistical Identification and Response-Type Clustering "
             "of Optogenetically Tagged Units},\n"
             f"  version = {{{__version__}}},\n"
-            "  year    = {2026}\n"
+            "  year    = {2026},\n"
+            "  license = {MIT},\n"
+            "  url     = {https://github.com/bramn22/OptoCurator}\n"
             "}"
             "</pre>"
         )
         QMessageBox.information(self, "How to cite OptoCurator", cite_text)
+
+    def closeEvent(self, event: Any) -> None:
+        """Prompt for unsaved changes and shut down workspace background workers before destruction."""
+        if not self._confirm_discard_detection_changes("exiting"):
+            event.ignore()
+            return
+        if not self._confirm_discard_clustering_changes("exiting"):
+            event.ignore()
+            return
+        if hasattr(self, "clustering_view") and self.clustering_view is not None:
+            self.clustering_view.shutdown_background_workers()
+        super().closeEvent(event)

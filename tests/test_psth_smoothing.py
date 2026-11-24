@@ -5,7 +5,6 @@ import numpy as np
 import pandas as pd
 import pyqtgraph as pg
 import pytest
-from PyQt6.QtWidgets import QInputDialog
 
 from optocurator.analysis.metrics import compute_gaussian_psth, compute_psth_and_raster
 from optocurator.analysis.clustering import (
@@ -20,7 +19,6 @@ from optocurator.io.project import (
     save_clustering_project,
     load_clustering_project,
 )
-from optocurator.ui.app import MainWindow
 from optocurator.ui.view_clusters import ClusteringView
 from optocurator.ui.view_detection import DetectionView
 from tests.test_detection_workflow import create_synthetic_experiment_folder
@@ -83,12 +81,18 @@ def test_generate_psth_matrix_smoothing():
         {"global_unit_id": "u1", "latency_ms": 4.0, "reliability": 0.9},
         {"global_unit_id": "u2", "latency_ms": 10.0, "reliability": 0.7},
     ])
+    pulses = np.array([1.0, 2.0, 3.0, 4.0], dtype=np.float64)
+    spike_data_map = {
+        "u1": (pulses + 0.004, pulses),
+        "u2": (pulses + 0.010, pulses),
+    }
 
     psth_cache = {}
     psth_matrix, time_bins = generate_psth_matrix(
         df,
         time_window_ms=(-20.0, 40.0),
         bin_size_ms=2.0,
+        spike_data_map=spike_data_map,
         psth_cache=psth_cache,
         smooth=True,
         gaussian_sigma_ms=2.5,
@@ -96,6 +100,8 @@ def test_generate_psth_matrix_smoothing():
 
     assert psth_matrix.shape == (2, len(time_bins))
     assert np.all(psth_matrix >= 0.0)
+    assert np.any(psth_matrix > 0.0)
+    assert len(psth_cache) == 2
     # Check that cache keys include smoothing parameters
     for k in psth_cache:
         assert len(k) == 5
@@ -221,45 +227,3 @@ def test_clustering_view_psth_smoothing_interaction(qapp):
         assert view.image_viewer is not None
 
     view.close()
-
-
-def test_main_window_psth_smoothing_menu_delegation(qapp, monkeypatch):
-    """Verify MainWindow View -> PSTH Smoothing menu actions delegate to DetectionView and ClusteringView."""
-    win = MainWindow()
-    win.show()
-
-    assert hasattr(win, "act_smooth_toggle")
-    assert hasattr(win, "sigma_actions")
-    assert win.act_smooth_toggle.isChecked() is True
-
-    # 1. Toggle smoothing action
-    win.act_smooth_toggle.setChecked(False)
-    win.act_smooth_toggle.triggered.emit(False)
-    assert win.detection_view.psth_smooth is False
-    assert win.clustering_view.psth_smooth is False
-    assert win.detection_view.chk_smooth.isChecked() is False
-    assert win.clustering_view.chk_smooth.isChecked() is False
-
-    win.act_smooth_toggle.setChecked(True)
-    win.act_smooth_toggle.triggered.emit(True)
-    assert win.detection_view.psth_smooth is True
-    assert win.clustering_view.psth_smooth is True
-
-    # 2. Select preset sigma (5.0 ms)
-    assert 5.0 in win.sigma_actions
-    win.sigma_actions[5.0].trigger()
-    assert win.detection_view.psth_gaussian_sigma_ms == 5.0
-    assert win.clustering_view.psth_gaussian_sigma_ms == 5.0
-    assert win.detection_view.spin_sigma.value() == 5.0
-    assert win.clustering_view.spin_sigma.value() == 5.0
-    assert win.sigma_actions[5.0].isChecked() is True
-
-    # 3. Custom sigma prompt dialog
-    monkeypatch.setattr(QInputDialog, "getDouble", lambda *args, **kwargs: (3.5, True))
-    win._on_custom_psth_sigma()
-    assert win.detection_view.psth_gaussian_sigma_ms == 3.5
-    assert win.clustering_view.psth_gaussian_sigma_ms == 3.5
-    assert win.detection_view.spin_sigma.value() == 3.5
-    assert win.clustering_view.spin_sigma.value() == 3.5
-
-    win.close()

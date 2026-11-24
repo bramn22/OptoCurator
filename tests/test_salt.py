@@ -177,3 +177,56 @@ def test_salt_exclusion_window_true_opto_preserved():
 
     # True evoked response at 4.0 ms must remain highly statistically significant (p < 0.01)
     assert p_val < 0.01
+
+
+def test_salt_baseline_subwindow_no_overflow_and_zero_eval_dur():
+    """Verify baseline sub-windows never spill into post-stimulus window and degenerate windows return 1.0 (Bug M2)."""
+    pulse_onsets = np.arange(1.0, 31.0, 1.0)
+    evoked_spikes = pulse_onsets + 0.003  # deterministic +3.0 ms evoked spike, 0 spontaneous spikes
+
+    # 55 ms / 20 ms = 2.75 -> round() used 3 sub-windows, pushing m=2 to [-15, +5] ms
+    p_non_int = compute_salt_p_value(
+        evoked_spikes,
+        pulse_onsets,
+        eval_window_ms=(0.0, 20.0),
+        baseline_window_ms=(-55.0, 0.0),
+        n_permutations=100,
+        random_state=42,
+    )
+    assert p_non_int < 0.05
+
+    # Baseline shorter than eval_dur must still clamp sub-window end to baseline_window_ms[1] (0.0 ms)
+    p_short_base = compute_salt_p_value(
+        evoked_spikes,
+        pulse_onsets,
+        eval_window_ms=(0.0, 20.0),
+        baseline_window_ms=(-15.0, 0.0),
+        n_permutations=100,
+        random_state=42,
+    )
+    assert p_short_base < 0.05
+
+    # With 0 pre-stimulus spikes, (-55, 0) / (0, 20) must use floor(2.75)=2 strictly pre-stimulus
+    # windows (same M=2 empty baseline as (-40, 0)), never spilling into [0, +5) ms to capture +3 ms spikes
+    sparse_evoked = pulse_onsets[:2] + 0.003
+    p_55 = compute_salt_p_value(
+        sparse_evoked,
+        pulse_onsets,
+        eval_window_ms=(0.0, 20.0),
+        baseline_window_ms=(-55.0, 0.0),
+        n_permutations=100,
+        random_state=42,
+    )
+    p_40 = compute_salt_p_value(
+        sparse_evoked,
+        pulse_onsets,
+        eval_window_ms=(0.0, 20.0),
+        baseline_window_ms=(-40.0, 0.0),
+        n_permutations=100,
+        random_state=42,
+    )
+    assert p_55 == pytest.approx(p_40)
+
+    # Degenerate zero-width evaluation or baseline windows must return 1.0 instead of raising ZeroDivisionError
+    assert compute_salt_p_value(evoked_spikes, pulse_onsets, eval_window_ms=(0.0, 0.0)) == 1.0
+    assert compute_salt_p_value(evoked_spikes, pulse_onsets, baseline_window_ms=(0.0, 0.0)) == 1.0

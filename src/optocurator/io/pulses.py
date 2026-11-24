@@ -6,14 +6,18 @@ from typing import List, Optional, Union
 import numpy as np
 import scipy.io
 
-from optocurator.io.base import BaseStimulusReader
-from optocurator.models import StimulusProtocol
+from optocurator.io.phy import timestamps_to_seconds
+from optocurator.models import (
+    DEFAULT_PULSE_DURATION_S,
+    DEFAULT_SAMPLING_RATE_HZ,
+    StimulusProtocol,
+)
 
 
-class MatNpyStimulusReader(BaseStimulusReader):
+class MatNpyStimulusReader:
     """Loads optical stimulus pulse onsets and offsets from .npy or .mat files."""
 
-    def __init__(self, default_pulse_duration_s: float = 0.020) -> None:
+    def __init__(self, default_pulse_duration_s: float = DEFAULT_PULSE_DURATION_S) -> None:
         self.default_pulse_duration_s = default_pulse_duration_s
 
     def discover(self, folder_path: Union[str, Path]) -> List[Path]:
@@ -58,7 +62,7 @@ class MatNpyStimulusReader(BaseStimulusReader):
     def load(
         self,
         file_path: Union[str, Path],
-        sampling_rate: float = 30000.0,
+        sampling_rate: float = DEFAULT_SAMPLING_RATE_HZ,
         protocol_name: Optional[str] = None,
     ) -> StimulusProtocol:
         """Load pulse timestamps from .npy or .mat file.
@@ -99,39 +103,26 @@ class MatNpyStimulusReader(BaseStimulusReader):
                 name=protocol_name,
             )
 
+        data = np.squeeze(data)
+        if data.ndim == 0:
+            data = data.reshape(1)
+        elif data.ndim == 2 and data.shape[0] == 2 and data.shape[1] > 2:
+            data = data.T
+
         # Extract onsets and offsets
         if data.ndim == 2 and data.shape[1] >= 2:
             onsets_raw = data[:, 0]
             offsets_raw = data[:, 1]
-        elif data.ndim == 2 and data.shape[0] >= 2 and data.shape[1] == 1:
-            onsets_raw = data.flatten()
-            offsets_raw = None
-        elif data.ndim == 1:
-            onsets_raw = data
-            offsets_raw = None
         else:
             onsets_raw = data.flatten()
             offsets_raw = None
 
-        # Convert to seconds
-        # Check if values are sample indices (integers or large numbers > 10000)
-        is_sample_indices = (
-            np.issubdtype(onsets_raw.dtype, np.integer)
-            or (len(onsets_raw) > 0 and np.nanmax(onsets_raw) > 10000.0)
-        )
-
-        if is_sample_indices:
-            onsets_sec = onsets_raw.astype(np.float64) / sampling_rate
-            if offsets_raw is not None:
-                offsets_sec = offsets_raw.astype(np.float64) / sampling_rate
-            else:
-                offsets_sec = onsets_sec + self.default_pulse_duration_s
+        # Integer arrays store sample indices; float arrays are already in seconds.
+        onsets_sec = timestamps_to_seconds(onsets_raw, sampling_rate)
+        if offsets_raw is not None:
+            offsets_sec = timestamps_to_seconds(offsets_raw, sampling_rate)
         else:
-            onsets_sec = onsets_raw.astype(np.float64)
-            if offsets_raw is not None:
-                offsets_sec = offsets_raw.astype(np.float64)
-            else:
-                offsets_sec = onsets_sec + self.default_pulse_duration_s
+            offsets_sec = onsets_sec + self.default_pulse_duration_s
 
         # Ensure sorted by onsets
         if len(onsets_sec) > 1 and not np.all(onsets_sec[:-1] <= onsets_sec[1:]):

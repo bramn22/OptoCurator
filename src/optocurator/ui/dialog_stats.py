@@ -585,9 +585,6 @@ class StatsParametersDialog(QDialog):
             wf_window_start_ms=wf_window_start,
             wf_window_end_ms=wf_window_end,
             wf_max_spikes=wf_max_spikes,
-            psth_bin_size_ms=self.params.psth_bin_size_ms,
-            psth_baseline_start_ms=self.params.psth_baseline_start_ms,
-            psth_baseline_end_ms=self.params.psth_baseline_end_ms,
         )
         self.accept()
 

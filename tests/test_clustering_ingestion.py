@@ -15,7 +15,6 @@ from optocurator.io.validation import (
     validate_phase1_export,
 )
 from optocurator.ui.app import MainWindow
-from optocurator.ui.image_viewer import ImageViewer
 from optocurator.ui.plots import UnitResponsePlot
 from optocurator.ui.view_clusters import ClusteringView
 
@@ -68,7 +67,18 @@ def _build_test_phase1_export(
     df = pd.DataFrame(rows)
     csv_path = session_dir / f"{session_id}_opto_curated.csv"
     df.to_csv(csv_path, index=False)
-    np.save(session_dir / "opto_idxs_OPTS03.npy", np.array([50, 100, 150]))
+    np.save(session_dir / "opto_idxs_OPTS03.npy", np.array([30000, 60000, 90000]))
+
+    # Include real spike arrays + pulse_onsets in <session_id>_spikes.npz matching Phase 1 export
+    arrays_dir = session_dir / f"{session_id}_arrays"
+    arrays_dir.mkdir(parents=True, exist_ok=True)
+    pulse_onsets = np.array([1.0, 2.0, 3.0, 4.0, 5.0], dtype=np.float64)
+    spikes_payload = {"pulse_onsets": pulse_onsets}
+    for i in range(1, n_units + 1):
+        spikes_payload[f"unit_{i}"] = np.sort(
+            np.concatenate([pulse_onsets - 0.015, pulse_onsets + 0.003 + 0.0012 * i])
+        )
+    np.savez_compressed(arrays_dir / f"{session_id}_spikes.npz", **spikes_payload)
     return session_dir
 
 
@@ -122,43 +132,20 @@ def test_validate_phase1_export_nonexistent_dir():
         validate_phase1_export(Path("non_existent_directory_12345"))
 
 
-# --- 2. ImageViewer Unit Tests ---
+def test_validate_phase1_export_string_boolean_is_tagged(tmp_path: Path):
+    """validate_phase1_export must parse string is_tagged booleans consistently with tagged_df (Bug IO7)."""
+    session_dir = _build_test_phase1_export(tmp_path, "str_bool_session", n_units=4, n_tagged=1)
+    csv_path = session_dir / "str_bool_session_opto_curated.csv"
+    df = pd.read_csv(csv_path)
+    df["is_tagged"] = pd.Series(["True ", "False ", "0", "no"], dtype=object)
+    df.to_csv(csv_path, index=False)
+
+    meta = validate_phase1_export(session_dir)
+    assert len(meta.tagged_df) == 1
+    assert meta.tagged_units == 1
 
 
-def test_image_viewer_lifecycle(qapp, tmp_path: Path):
-    """Verify ImageViewer placeholder, image loading, and clearing lifecycle."""
-    viewer = ImageViewer()
-    assert viewer.lbl_title.text() == "Pre-rendered Unit Plot"
-
-    # Placeholder state with None
-    ok = viewer.set_image(None, metadata={"global_unit_id": "test_u0001", "latency_ms": 4.2})
-    assert not ok
-    assert "Unit: 1" in viewer.lbl_title.text()
-
-    # Valid PNG display
-    sample_png = _create_dummy_png(tmp_path / "test_plot.png", width=200, height=150)
-    meta = {
-        "global_unit_id": "mouseA_u0002",
-        "latency_ms": 3.8,
-        "reliability": 0.85,
-        "salt_p_value": 0.0012,
-        "is_tagged": True,
-    }
-    loaded = viewer.set_image(sample_png, metadata=meta)
-    assert loaded is True
-    assert "Session: mouseA" in viewer.lbl_title.text()
-    assert "Unit: 2" in viewer.lbl_title.text()
-    assert viewer.lbl_badge.isHidden()
-    assert viewer._current_pixmap is not None
-    assert not viewer._current_pixmap.isNull()
-
-    # Clear preview resets to clean state
-    viewer.clear_preview()
-    assert viewer._current_pixmap is None
-    assert viewer.lbl_title.text() == "Pre-rendered Unit Plot"
-
-
-# --- 3. ClusteringView Multi-Experiment Ingestion Tests ---
+# --- 2. ClusteringView Multi-Experiment Ingestion Tests ---
 
 
 def test_clustering_view_initial_mock_state(qapp):
@@ -365,5 +352,77 @@ def test_ingested_experiment_cell_list_schema_and_resizing(qapp, tmp_path: Path)
     assert view.clusters_container.minimumSize().width() <= 300
 
     view.close()
+
+
+def test_protocol_name_persisted_and_fallback_uses_sampling_rate(qapp, tmp_path: Path):
+    """DetectionView export must persist protocol_name and Phase 2 fallback must pass sampling_rate (Bug IO4)."""
+    from optocurator.models import StimulusProtocol, UnitData
+    from optocurator.ui.view_detection import DetectionView
+
+    # 1. DetectionView export with custom protocol name and no opto_idxs_*.npy on disk
+    sess_dir = tmp_path / "sess_custom_proto"
+    sess_dir.mkdir(parents=True)
+    onsets = np.array([1.0, 2.0, 3.0], dtype=np.float64)
+    proto = StimulusProtocol(onsets=onsets, offsets=onsets + 0.01, name="LASER_473")
+    units = [
+        UnitData(
+            session_id="sess_custom_proto",
+            unit_id=1,
+            spike_times=np.sort(np.concatenate([onsets - 0.02, onsets + 0.004])),
+            sampling_rate=20000.0,
+        )
+    ]
+
+    det = DetectionView()
+    det.current_folder = sess_dir
+    det.session_id = "sess_custom_proto"
+    det.units = units
+    det.units_by_id = {u.unit_id: u for u in units}
+    det.protocols = {"LASER_473": proto}
+    det.current_protocol = proto
+    det._recompute_session_metrics()
+    det.export_curated_session(export_dir=sess_dir, show_dialog=False, precompute_pngs=False)
+    det.close()
+
+    npz_path = sess_dir / "sess_custom_proto_arrays" / "sess_custom_proto_spikes.npz"
+    with np.load(npz_path, allow_pickle=True) as data:
+        assert "protocol_name" in data.files
+        assert str(np.asarray(data["protocol_name"]).item()) == "LASER_473"
+
+    meta = validate_phase1_export(sess_dir)
+    assert meta.protocol_name == "LASER_473"
+
+    # 2. Fallback disk pulse loader in ClusteringView must pass session sampling_rate (20000 Hz)
+    sess_20k = tmp_path / "sess_20k"
+    sess_20k.mkdir(parents=True)
+    sr = 20000.0
+    (sess_20k / "params.py").write_text(f"sample_rate = {sr}\n", encoding="utf-8")
+    np.save(sess_20k / "spike_times.npy", np.array([20080, 40080], dtype=np.uint64))
+    np.save(sess_20k / "spike_clusters.npy", np.array([1, 1], dtype=np.int32))
+    np.save(sess_20k / "opto_idxs_BLUE20K.npy", np.array([[20000, 20200], [40000, 40200]], dtype=np.uint32))
+    (sess_20k / "sess_20k_plots").mkdir()
+    _create_dummy_png(sess_20k / "sess_20k_plots" / "sess_20k_u0001_psth_raster.png")
+    pd.DataFrame([
+        {
+            "global_unit_id": "sess_20k_u0001",
+            "session_id": "sess_20k",
+            "unit_id": 1,
+            "latency_ms": 4.0,
+            "jitter_ms": 0.5,
+            "reliability": 1.0,
+            "waveform_correlation": 0.95,
+            "salt_p_value": 0.01,
+            "is_tagged": True,
+            "cluster_id": -1,
+            "curated_label": "Tagged",
+            "plot_path": "sess_20k_plots/sess_20k_u0001_psth_raster.png",
+        }
+    ]).to_csv(sess_20k / "sess_20k_opto_curated.csv", index=False)
+
+    clust = ClusteringView()
+    assert clust.add_experiment_folder(sess_20k) is True
+    onsets_loaded = clust._experiment_stimulus["sess_20k"]
+    np.testing.assert_allclose(onsets_loaded, [1.0, 2.0])
+    clust.close()
 
 
