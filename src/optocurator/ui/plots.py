@@ -1,7 +1,7 @@
 """Live pyqtgraph plot helpers for Phase 1 Detection View and Phase 2 Inspection (§ 8.2)."""
 
 import re
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 import numpy as np
 import pyqtgraph as pg
 from PyQt6.QtCore import QRectF, QSize, Qt
@@ -9,6 +9,7 @@ from PyQt6.QtGui import QTransform
 from PyQt6.QtWidgets import QSizePolicy, QTableWidgetItem, QVBoxLayout, QWidget
 
 from optocurator.models import DEFAULT_PULSE_DURATION_MS
+from optocurator.ui.figure_export import install_figure_export_menu
 from optocurator.ui.theme import (
     COLOR_ACCENT,
     COLOR_ACCENT_HOVER,
@@ -789,8 +790,39 @@ class UnitResponsePlot(QWidget):
         layout.addWidget(self.raster_plot)
         layout.addWidget(self.psth_plot)
 
+        self.export_name_provider: Optional[Callable[[], str]] = None
+        install_figure_export_menu(
+            self.raster_plot,
+            export_target=self,
+            default_name=self._export_base_name,
+            label="Save Raster + PSTH as SVG…",
+            subplot_target=self.raster_plot,
+            subplot_default_name=lambda: f"{self._export_base_name()}_raster",
+            subplot_label="Save raster as SVG…",
+        )
+        install_figure_export_menu(
+            self.psth_plot,
+            export_target=self,
+            default_name=self._export_base_name,
+            label="Save Raster + PSTH as SVG…",
+            subplot_target=self.psth_plot,
+            subplot_default_name=lambda: f"{self._export_base_name()}_psth",
+            subplot_label="Save PSTH as SVG…",
+        )
+
         if not defer_initial_render:
             self.clear_preview()
+
+    def _export_base_name(self) -> str:
+        """Return base filename stem for SVG export."""
+        if callable(self.export_name_provider):
+            try:
+                name = str(self.export_name_provider() or "").strip()
+                if name:
+                    return name
+            except Exception:
+                pass
+        return "unit_response"
 
     def set_psth_tooltip(self, text: str) -> None:
         """Update the PSTH plot tooltip (e.g. to reflect bin size or normalisation)."""
@@ -986,6 +1018,24 @@ class SiliconProbeWidget(QWidget):
         )
         self.cand_marker.setZValue(20)
         self.plot_widget.addItem(self.cand_marker)
+
+        self.export_name_provider: Optional[Callable[[], str]] = None
+        install_figure_export_menu(
+            self.plot_widget,
+            export_target=self.plot_widget,
+            default_name=self._export_name,
+        )
+
+    def _export_name(self) -> str:
+        """Return filename stem for SVG export."""
+        if callable(self.export_name_provider):
+            try:
+                name = str(self.export_name_provider() or "").strip()
+                if name:
+                    return name
+            except Exception:
+                pass
+        return "silicon_probe"
 
     @property
     def plotItem(self) -> pg.PlotItem:

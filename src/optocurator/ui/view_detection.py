@@ -71,6 +71,7 @@ from optocurator.ui.detection_widgets import (
     DetectionWaveformPanel,
     install_combo_chevron,
 )
+from optocurator.ui.figure_export import install_figure_export_menu
 from optocurator.ui.plots import (
     DEFAULT_PULSE_DURATION_MS,
     NumericTableWidgetItem,
@@ -511,6 +512,11 @@ class DetectionView(QWidget):
         probe_row.setSpacing(10)
 
         self.probe_widget = SiliconProbeWidget(col)
+        self.probe_widget.export_name_provider = lambda: (
+            f"{self.session_id}_silicon_probe"
+            if (self.session_id and self.session_id != "None")
+            else "silicon_probe"
+        )
         self.probe_widget.units_scatter.sigClicked.connect(self._on_probe_unit_clicked)
         probe_row.addWidget(self.probe_widget)
 
@@ -669,6 +675,20 @@ class DetectionView(QWidget):
         self.plot_canvas.ci.layout.setRowStretchFactor(0, DETECTION_RASTER_SIZE[1])
         self.plot_canvas.ci.layout.setRowStretchFactor(1, DETECTION_PSTH_SIZE[1])
 
+        def _raster_psth_export_name() -> str:
+            sess = self.session_id if (self.session_id and self.session_id != "None") else ""
+            if self._focused_unit_id is not None:
+                uid_part = f"u{int(self._focused_unit_id):04d}"
+                return f"{sess}_{uid_part}_raster_psth" if sess else f"{uid_part}_raster_psth"
+            return f"{sess}_raster_psth" if sess else "raster_psth"
+
+        install_figure_export_menu(
+            self.plot_canvas,
+            export_target=self.plot_canvas,
+            default_name=_raster_psth_export_name,
+            label="Save Raster + PSTH as SVG…",
+        )
+
         left_plot_col = QVBoxLayout()
         left_plot_col.setContentsMargins(0, 0, 0, 0)
         left_plot_col.addWidget(self.plot_canvas)
@@ -684,6 +704,11 @@ class DetectionView(QWidget):
         right_plot_col.addWidget(self.waveform_panel)
 
         self.pairplot_widget = DetectionPairplotWidget(col)
+        self.pairplot_widget.export_name_provider = lambda: (
+            f"{self.session_id}_tagging_pairplot"
+            if (self.session_id and self.session_id != "None")
+            else "tagging_pairplot"
+        )
         self.pairplot_widget.unit_clicked.connect(self._focus_unit_by_id)
         right_plot_col.addWidget(self.pairplot_widget)
         right_plot_col.addStretch()
@@ -816,10 +841,41 @@ class DetectionView(QWidget):
             "wf": self.row_wf,
         }
 
+        self.criteria_container = QWidget(col)
+        criteria_layout = QVBoxLayout(self.criteria_container)
+        criteria_layout.setContentsMargins(0, 0, 0, 0)
+        criteria_layout.setSpacing(layout.spacing())
+
+        def _criteria_export_name() -> str:
+            if self.session_id and self.session_id != "None":
+                return f"{self.session_id}_tagging_criteria"
+            return "tagging_criteria"
+
+        install_figure_export_menu(
+            self.criteria_container,
+            export_target=self.criteria_container,
+            default_name=_criteria_export_name,
+            label="Save tagging criteria as SVG…",
+        )
+
         for row_widget in self._criterion_rows.values():
-            layout.addWidget(row_widget)
+            criteria_layout.addWidget(row_widget)
             row_widget.enabled_changed.connect(self._on_criteria_ui_changed)
             row_widget.threshold_changed.connect(self._on_criteria_ui_changed)
+            install_figure_export_menu(
+                row_widget,
+                export_target=self.criteria_container,
+                default_name=_criteria_export_name,
+                label="Save tagging criteria as SVG…",
+            )
+            install_figure_export_menu(
+                row_widget.plot_dist,
+                export_target=self.criteria_container,
+                default_name=_criteria_export_name,
+                label="Save tagging criteria as SVG…",
+            )
+
+        layout.addWidget(self.criteria_container)
 
         # Backward-compat aliases
         self.chk_latency = self.row_latency.chk_enabled

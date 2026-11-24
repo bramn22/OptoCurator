@@ -1,6 +1,6 @@
 """Fixed-size plot and criterion widgets for WP9 Detection Mode (§ 13.5, § 13.6)."""
 
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 import numpy as np
 import pyqtgraph as pg
 from PyQt6.QtCore import QPointF, QRectF, QSize, Qt, pyqtSignal
@@ -17,6 +17,7 @@ from PyQt6.QtWidgets import (
 )
 
 from optocurator.models import MISSING_METRIC_SENTINEL
+from optocurator.ui.figure_export import install_figure_export_menu
 from optocurator.ui.plots import apply_plot_style
 from optocurator.ui.theme import (
     COLOR_ACCENT,
@@ -895,6 +896,7 @@ class DetectionPairplotWidget(QWidget):
         root.addLayout(grid)
 
         # Build per-plot overlay items (passing rect, threshold lines, scatters)
+        self.export_name_provider: Optional[Callable[[], str]] = None
         self._cells: Dict[str, Dict[str, Any]] = {}
         for key, plot_w in (
             ("jit_lat", self.plot_jit_lat),
@@ -902,6 +904,26 @@ class DetectionPairplotWidget(QWidget):
             ("rel_jit", self.plot_rel_jit),
         ):
             self._cells[key] = self._init_cell_items(plot_w)
+            install_figure_export_menu(
+                plot_w,
+                export_target=self,
+                default_name=self._export_base_name,
+                label="Save pairplot as SVG…",
+                subplot_target=plot_w,
+                subplot_default_name=lambda k=key: f"{self._export_base_name()}_{k}",
+                subplot_label="Save this subplot as SVG…",
+            )
+
+    def _export_base_name(self) -> str:
+        """Return base filename stem for pairplot SVG export."""
+        if callable(self.export_name_provider):
+            try:
+                name = str(self.export_name_provider() or "").strip()
+                if name:
+                    return name
+            except Exception:
+                pass
+        return "tagging_pairplot"
 
     def _make_scatter_plot(
         self,

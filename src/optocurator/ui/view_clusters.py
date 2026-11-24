@@ -168,6 +168,10 @@ from optocurator.ui.dialog_clustering_settings import (
 from optocurator.ui.dialog_clusters_customize import CustomizeClustersDialog, normalize_hotkey
 from optocurator.ui.dialog_feature_settings import FeatureSettingsDialog
 from optocurator.ui.dialog_seed_clusters import SeedClustersDialog
+from optocurator.ui.figure_export import (
+    install_figure_export_menu,
+    populate_figure_export_menu,
+)
 from optocurator.ui.plots import (
     DEFAULT_PULSE_DURATION_MS,
     NumericTableWidgetItem,
@@ -611,6 +615,15 @@ class MarginalDistributionsWidget(QWidget):
             self.value_items[key] = val_item
             self.value_labels[key] = lbl_val
             p.setYRange(0.0, 1.2, padding=0.0)
+            install_figure_export_menu(
+                p,
+                export_target=self,
+                default_name="marginal_distributions",
+                label="Save marginal distributions as SVG…",
+                subplot_target=p,
+                subplot_default_name=f"marginal_{key}",
+                subplot_label="Save this subplot as SVG…",
+            )
             cell_layout.addWidget(p)
             grid_layout.addWidget(cell, r, c)
 
@@ -868,6 +881,11 @@ class ClusterProbabilityBarWidget(QWidget):
 
         self.plot_widget.scene().sigMouseMoved.connect(self._on_mouse_moved)
         self.plot_widget.scene().sigMouseClicked.connect(self._on_mouse_clicked)
+        install_figure_export_menu(
+            self.plot_widget,
+            export_target=self.plot_widget,
+            default_name="cluster_probability",
+        )
 
     def _bar_index_at_scene_pos(self, scene_pos: QPointF) -> Optional[int]:
         """Map scene position to bar index if pointer is over a bar column."""
@@ -1372,6 +1390,24 @@ class ClusterCardWidget(QFrame):
         self.lbl_count.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
         self.lbl_prob.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
 
+        # Forward any direct ContextMenu events on plot/viewport to the card's unified menu
+        class _CardPlotContextForwarder(QObject):
+            def __init__(self, card: "ClusterCardWidget") -> None:
+                super().__init__(card)
+                self._card = card
+
+            def eventFilter(self, _obj: QObject, ev: QEvent) -> bool:  # noqa: N802
+                if ev.type() == QEvent.Type.ContextMenu:
+                    self._card.contextMenuEvent(ev)
+                    ev.accept()
+                    return True
+                return False
+
+        self._plot_ctx_forwarder = _CardPlotContextForwarder(self)
+        plot.installEventFilter(self._plot_ctx_forwarder)
+        if plot.viewport() is not None:
+            plot.viewport().installEventFilter(self._plot_ctx_forwarder)
+
         self.set_hotkey(hotkey)
         self._update_header_text()
 
@@ -1728,6 +1764,14 @@ class ClusterCardWidget(QFrame):
             act_none = merge_menu.addAction("No other clusters")
             act_none.setEnabled(False)
 
+        populate_figure_export_menu(
+            menu,
+            export_target=self.plot,
+            default_name=lambda: f"cluster_{self.cluster_id}_{self.display_name}",
+            label="Save figure as SVG…",
+            add_separator=True,
+        )
+
         menu.addSeparator()
 
         from PyQt6.QtWidgets import QWidgetAction
@@ -2065,6 +2109,7 @@ class _MemberRowFrame(QFrame):
         """Lazily promote the static snapshot slot to a live UnitResponsePlot on explicit access."""
         if self._live_plot is None:
             live = UnitResponsePlot(self.plot_slot, defer_initial_render=True)
+            live.export_name_provider = lambda gid=self.gid: f"{gid}_raster_psth"
             self._owner._populate_unit_response_for_unit(live, self.gid)
             self._pixmap_label.hide()
             self._pixmap_label.clear()
@@ -2454,6 +2499,13 @@ class ClusteringView(QWidget):
         )
         self.cand_scatter.setZValue(20)
         self.pca_plot.addItem(self.cand_scatter)
+        install_figure_export_menu(
+            self.pca_plot,
+            export_target=self.pca_plot,
+            default_name=lambda: (
+                f"embedding_{str(self.combo_embedding_method.currentData() or self.combo_embedding_method.currentText() or 'pca').lower()}"
+            ),
+        )
         pca_vbox.addWidget(self.pca_plot, alignment=Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
         embed_probe_layout.addWidget(pca_container)
 
@@ -2482,6 +2534,11 @@ class ClusteringView(QWidget):
         self.lbl_probe_unit_info.setVisible(False)
 
         self.probe_widget = SiliconProbeWidget(self)
+        self.probe_widget.export_name_provider = lambda: (
+            f"{self._current_probe_session_id}_silicon_probe"
+            if self._current_probe_session_id
+            else "silicon_probe"
+        )
         self.probe_plot = self.probe_widget.plot_widget
         self._init_probe_view()
         probe_vbox.addWidget(self.probe_widget, alignment=Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
@@ -2570,6 +2627,15 @@ class ClusteringView(QWidget):
         focused_layout.addWidget(self._focused_align_spacer)
 
         self.unit_response_plot = UnitResponsePlot(self)
+        self.unit_response_plot.export_name_provider = lambda: (
+            f"{self._current_selected_gid}_raster_psth"
+            if self._current_selected_gid
+            else (
+                f"{self.active_candidate.global_unit_id}_raster_psth"
+                if self.active_candidate is not None
+                else "unit_response"
+            )
+        )
         self.image_viewer = self.unit_response_plot
         focused_layout.addWidget(self.unit_response_plot, alignment=Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignHCenter)
 
