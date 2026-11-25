@@ -514,3 +514,124 @@ def test_wp9_pairplot_salt_criterion_updates_hline_and_pass_rect(qapp, tmp_path:
             assert rect.bottom() == pytest.approx(0.0, abs=1e-6)
     finally:
         view.close()
+
+
+def test_wp9_salt_resolution_helpers_across_permutations() -> None:
+    """Verify salt_p_resolution_floor, format_salt_p_value, and salt_log_axis_spec across permutation counts."""
+    import pytest
+    from optocurator.ui.detection_widgets import (
+        format_salt_p_value,
+        salt_log_axis_spec,
+        salt_p_resolution_floor,
+    )
+
+    cases = [
+        (100, 1.0 / 101, "≤ 0.01", 0.05, "0.050", 1e-3, (-3.0, "0.001")),
+        (1000, 1.0 / 1001, "≤ 0.001", 0.015, "0.015", 1e-3, (-3.0, "0.001")),
+        (5000, 1.0 / 5001, "≤ 0.0002", 0.0025, "0.0025", 1e-4, (-4.0, "1e-4")),
+        (10000, 1.0 / 10001, "≤ 0.0001", 0.0025, "0.0025", 1e-4, (-4.0, "1e-4")),
+        (100000, 1.0 / 100001, "≤ 1e-05", 0.00025, "0.00025", 1e-5, (-5.0, "1e-5")),
+    ]
+
+    for n_perm, exp_floor, exp_floor_str, above_val, exp_above_str, exp_p_min, exp_first_tick in cases:
+        assert salt_p_resolution_floor(n_perm) == pytest.approx(exp_floor, rel=1e-12)
+        assert format_salt_p_value(exp_floor, n_perm) == exp_floor_str
+        assert format_salt_p_value(above_val, n_perm) == exp_above_str
+
+        p_min, p_max, ticks = salt_log_axis_spec(n_perm)
+        assert p_min == pytest.approx(exp_p_min, rel=1e-12)
+        assert p_max == pytest.approx(1.0)
+        assert ticks[0] == exp_first_tick
+        assert ticks[-1] == (0.0, "1")
+
+    assert format_salt_p_value(float("nan"), 1000) == "—"
+
+
+def test_wp9_detection_view_dynamic_salt_resolution_1000_and_5000_permutations(
+    qapp, tmp_path: Path
+) -> None:
+    """Verify DetectionView table, row_salt KDE/validator, and pairplot SALT axis adapt to 1000 and 5000 permutations."""
+    import pytest
+    from PyQt6.QtCore import QLocale
+    from PyQt6.QtGui import QValidator
+    from optocurator.ui.view_detection import _COL_SALT
+
+    exp_folder = tmp_path / "wp9_dynamic_salt_res"
+    create_synthetic_experiment_folder(exp_folder, n_units=4, n_pulses=20)
+
+    orig_locale = QLocale()
+    view = DetectionView()
+    try:
+        assert view.load_experiment_folder(exp_folder) is True
+
+        # --- 1000 permutations ---
+        view.stats_params.salt_n_permutations = 1000
+        view.metrics[0].salt_p_value = 1.0 / 1001.0
+        view._sync_salt_resolution()
+        view._populate_table()
+        row_u0 = _find_row_for_unit(view, 0)
+        view.table_units.selectRow(row_u0)
+        view._on_unit_selected()
+        view._update_criteria_visuals()
+        qapp.processEvents()
+
+        assert view.table_units.item(row_u0, _COL_SALT).text() == "≤ 0.001"
+        assert view.row_salt.lbl_focused_value.text() == "≤ 0.001"
+        assert view.row_salt._axis_range == (pytest.approx(1e-3), pytest.approx(1.0))
+        assert view.row_salt._plot_min == pytest.approx(-3.0)
+        assert view.row_salt._plot_max == pytest.approx(0.0)
+        yr_1000 = view.pairplot_widget.plot_salt_lat.getViewBox().viewRange()[1]
+        assert yr_1000[0] == pytest.approx(-3.0, abs=1e-6)
+        assert yr_1000[1] == pytest.approx(0.0, abs=1e-6)
+
+        # --- 5000 permutations (also verify strict C-locale validator under comma locale) ---
+        QLocale.setDefault(QLocale("nl_BE"))
+        view.stats_params.salt_n_permutations = 5000
+        p_floor_5000 = 1.0 / 5001.0
+        view.metrics[0].salt_p_value = p_floor_5000
+        view._sync_salt_resolution()
+        view._populate_table()
+        row_u0 = _find_row_for_unit(view, 0)
+        view.table_units.selectRow(row_u0)
+        view._on_unit_selected()
+        view._update_criteria_visuals()
+        qapp.processEvents()
+
+        assert view.table_units.item(row_u0, _COL_SALT).text() == "≤ 0.0002"
+        assert view.row_salt.lbl_focused_value.text() == "≤ 0.0002"
+        assert view.row_salt._axis_range == (pytest.approx(1e-4), pytest.approx(1.0))
+        assert view.row_salt._plot_min == pytest.approx(-4.0)
+        assert view.row_salt._plot_max == pytest.approx(0.0)
+        assert (-4.0, "1e-4") in view.row_salt._ticks
+
+        # Validator rebuilt by set_axis_range still enforces strict C-locale (rejects commas)
+        val = view.row_salt.edit_threshold.validator()
+        assert val is not None
+        assert val.locale().language() == QLocale.Language.C
+        assert bool(val.locale().numberOptions() & QLocale.NumberOption.RejectGroupSeparator)
+        state_comma, _, _ = val.validate("0,01", 4)
+        assert state_comma == QValidator.State.Invalid
+        state_dot, _, _ = val.validate("0.0005", 6)
+        assert state_dot == QValidator.State.Acceptable
+
+        # Pairplot SALT p axis expands to [-4.0, 0.0] and plots 1/5001 at log10(1/5001) ~ -3.699
+        yr_5000 = view.pairplot_widget.plot_salt_lat.getViewBox().viewRange()[1]
+        assert yr_5000[0] == pytest.approx(-4.0, abs=1e-6)
+        assert yr_5000[1] == pytest.approx(0.0, abs=1e-6)
+
+        expected_log_y = float(np.log10(p_floor_5000))
+        assert expected_log_y < -3.5
+        for key in ("salt_lat", "salt_jit", "salt_rel"):
+            cell = view.pairplot_widget._cells[key]
+            u0_pts = [
+                pt
+                for sk in ("tagged", "untagged")
+                for pt in cell[sk].points()
+                if int(pt.data()) == 0
+            ]
+            assert len(u0_pts) == 1
+            assert float(u0_pts[0].pos().y()) == pytest.approx(expected_log_y, abs=1e-5)
+            assert float(u0_pts[0].pos().y()) < -3.0
+    finally:
+        QLocale.setDefault(orig_locale)
+        view.close()

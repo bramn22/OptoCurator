@@ -1,5 +1,6 @@
 """Fixed-size plot and criterion widgets for WP9 Detection Mode (§ 13.5, § 13.6)."""
 
+import math
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 import numpy as np
 import pyqtgraph as pg
@@ -57,6 +58,51 @@ _CRITERION_AXIS_HEIGHT: int = 20
 _CRITERION_ROW_HEIGHT: int = 66
 _PAIRPLOT_LEFT_MARGIN: int = DETECTION_PLOT_LEFT_MARGIN
 _PAIRPLOT_BOTTOM_HEIGHT: int = 34
+
+
+def salt_p_resolution_floor(n_permutations: int) -> float:
+    """Return the exact minimum non-zero SALT p-value for `n_permutations`."""
+    return 1.0 / (max(1, int(n_permutations)) + 1)
+
+
+def format_salt_p_value(val: float, n_permutations: int = 100) -> str:
+    """Format a SALT p-value relative to the permutation resolution floor."""
+    n_perm = max(1, int(n_permutations))
+    p_floor = 1.0 / (n_perm + 1)
+    v = float(val)
+    if not math.isfinite(v):
+        return "—"
+    if v <= p_floor + 1e-12:
+        bound = 1.0 / n_perm
+        if bound >= 1e-4:
+            bound_str = f"{bound:.6f}".rstrip("0").rstrip(".")
+        else:
+            bound_str = f"{bound:g}"
+        return f"≤ {bound_str}"
+    dec = min(6, max(3, int(math.ceil(math.log10(n_perm)))))
+    return f"{v:.{dec}f}"
+
+
+def salt_log_axis_spec(
+    n_permutations: int = 100,
+) -> Tuple[float, float, List[Tuple[float, str]]]:
+    """Compute `(p_min, p_max, log10_ticks)` for a SALT p log-axis given `n_permutations`."""
+    n_perm = max(1, int(n_permutations))
+    min_exp = min(-3, int(math.floor(math.log10(1.0 / n_perm) + 1e-12)))
+    ticks: List[Tuple[float, str]] = []
+    for exp in range(min_exp, 1):
+        if exp == 0:
+            label = "1"
+        elif exp == -1:
+            label = "0.1"
+        elif exp == -2:
+            label = "0.01"
+        elif exp == -3:
+            label = "0.001"
+        else:
+            label = f"1e{exp}"
+        ticks.append((float(exp), label))
+    return (10.0 ** min_exp, 1.0, ticks)
 
 
 def _compute_kde(samples: np.ndarray, grid: np.ndarray, span: float) -> np.ndarray:
@@ -260,6 +306,7 @@ class DetectionCriterionRow(QWidget):
         self._max_val = float(max_val)
         self._decimals = int(decimals)
         self._is_log = bool(is_log)
+        self._salt_n_permutations: int = 100
         self._threshold = float(default_threshold)
         self._enabled = True
 
@@ -413,6 +460,42 @@ class DetectionCriterionRow(QWidget):
 
         root.addLayout(bottom_row)
 
+    def set_axis_range(
+        self,
+        axis_range: Tuple[float, float],
+        ticks: Optional[Sequence[Any]] = None,
+        min_val: Optional[float] = None,
+        decimals: Optional[int] = None,
+    ) -> None:
+        """Update criterion axis bounds, ticks, and optional validator precision."""
+        self._axis_range = (float(axis_range[0]), float(axis_range[1]))
+        if self._is_log:
+            self._plot_min = float(np.log10(max(self._axis_range[0], 1e-12)))
+            self._plot_max = float(np.log10(max(self._axis_range[1], 1e-11)))
+        else:
+            self._plot_min = self._axis_range[0]
+            self._plot_max = self._axis_range[1]
+
+        self.plot_dist.getPlotItem().setXRange(self._plot_min, self._plot_max, padding=0.05)
+        self.set_ticks(ticks)
+
+        if min_val is not None or decimals is not None:
+            if min_val is not None:
+                self._min_val = float(min_val)
+            if decimals is not None:
+                self._decimals = int(decimals)
+            validator = QDoubleValidator(
+                self._min_val,
+                self._max_val,
+                max(self._decimals, 4),
+                self.edit_threshold,
+            )
+            validator.setNotation(QDoubleValidator.Notation.StandardNotation)
+            c_locale = QLocale.c()
+            c_locale.setNumberOptions(QLocale.NumberOption.RejectGroupSeparator)
+            validator.setLocale(c_locale)
+            self.edit_threshold.setValidator(validator)
+
     def set_ticks(self, ticks: Optional[Sequence[Any]] = None) -> None:
         """Set bottom axis tick positions (in data units) and render both end ticks clearly."""
         if ticks is None:
@@ -424,7 +507,7 @@ class DetectionCriterionRow(QWidget):
                     resolved.append((float(item[0]), str(item[1])))
                 else:
                     val = float(item)
-                    pos = float(np.log10(max(val, 1e-6))) if self._is_log else val
+                    pos = float(np.log10(max(val, 1e-12))) if self._is_log else val
                     resolved.append((pos, f"{val:g}"))
         self._ticks = resolved
         bottom_ax = self.plot_dist.getPlotItem().getAxis("bottom")
@@ -438,14 +521,13 @@ class DetectionCriterionRow(QWidget):
 
     def _format_value(self, val: float) -> str:
         if self._is_log:
-            if val <= 0.01:
-                return "≤ 0.01" if val == 0.01 else f"{val:.4g}"
-            return f"{val:.3f}"
+            return format_salt_p_value(val, self._salt_n_permutations)
         return f"{val:.{self._decimals}f}"
 
     def _to_plot_x(self, val: float) -> float:
         if self._is_log:
-            return float(np.log10(max(val, 1e-6)))
+            floor_clip = min(1e-6, max(self._axis_range[0], 1e-12))
+            return float(np.log10(max(val, floor_clip)))
         return float(val)
 
     def _passes(self, val: float, threshold: float) -> bool:
@@ -580,7 +662,8 @@ class DetectionCriterionRow(QWidget):
         arr = arr[np.isfinite(arr)]
         if self._is_log:
             arr = arr[arr > 0.0]
-            samples = np.log10(np.clip(arr, 1e-6, None))
+            floor_clip = min(1e-6, max(self._axis_range[0], 1e-12))
+            samples = np.log10(np.clip(arr, floor_clip, None))
         else:
             samples = arr
 
@@ -618,6 +701,9 @@ class DetectionPairplotWidget(QWidget):
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
         self._unit_meta: Dict[int, str] = {}
+        self._salt_n_permutations: int = 100
+        self._salt_min_p: float = 1e-3
+        self._salt_y_bounds: Tuple[float, float] = (-3.0, 0.0)
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
@@ -761,6 +847,22 @@ class DetectionPairplotWidget(QWidget):
                 subplot_label="Save this subplot as SVG…",
             )
 
+        self.set_salt_permutations(self._salt_n_permutations)
+
+    def set_salt_permutations(self, n_permutations: int) -> None:
+        """Update log10 SALT p axis bounds and ticks to match `n_permutations`."""
+        self._salt_n_permutations = max(1, int(n_permutations))
+        p_min, _p_max, ticks = salt_log_axis_spec(self._salt_n_permutations)
+        min_exp = float(ticks[0][0]) if ticks else -3.0
+        self._salt_min_p = float(p_min)
+        self._salt_y_bounds = (min_exp, 0.0)
+
+        for pw in (self.plot_salt_lat, self.plot_salt_jit, self.plot_salt_rel):
+            pw.getPlotItem().setYRange(min_exp, 0.0, padding=0.0)
+        salt_left_ax = self.plot_salt_lat.getPlotItem().getAxis("left")
+        if salt_left_ax is not None:
+            salt_left_ax.setTicks([ticks])
+
     def _export_base_name(self) -> str:
         """Return base filename stem for pairplot SVG export."""
         if callable(self.export_name_provider):
@@ -900,8 +1002,12 @@ class DetectionPairplotWidget(QWidget):
         salt_p_values: Optional[Sequence[float]] = None,
         salt_max: float = 0.05,
         salt_enabled: bool = True,
+        salt_n_permutations: Optional[int] = None,
     ) -> None:
         """Update pairplot scatters, threshold lines, passing regions, and focused ring."""
+        if salt_n_permutations is not None:
+            self.set_salt_permutations(salt_n_permutations)
+
         uids = np.asarray(unit_ids, dtype=np.int64)
         lat = np.asarray(latencies, dtype=np.float64)
         jit = np.asarray(jitters, dtype=np.float64)
@@ -936,15 +1042,16 @@ class DetectionPairplotWidget(QWidget):
         v_rel = rel[valid]
         v_tag = tag[valid]
         v_salt = salt[valid] if salt is not None else None
-        v_salt_log = np.log10(np.clip(v_salt, 1e-3, 1.0)) if v_salt is not None else None
+        v_salt_log = np.log10(np.clip(v_salt, self._salt_min_p, 1.0)) if v_salt is not None else None
 
         self._unit_meta.clear()
         if v_salt is not None:
             for uid, la, ji, re_val, sa_val, tg in zip(v_uids, v_lat, v_jit, v_rel, v_salt, v_tag):
                 status = "Tagged" if tg else "Untagged"
+                salt_txt = format_salt_p_value(float(sa_val), self._salt_n_permutations)
                 self._unit_meta[int(uid)] = (
                     f"Unit u{int(uid):04d} ({status}) · "
-                    f"Lat {la:.2f} ms · Jit {ji:.2f} ms · Rel {re_val:.2f} · SALT p {sa_val:.4g}"
+                    f"Lat {la:.2f} ms · Jit {ji:.2f} ms · Rel {re_val:.2f} · SALT p {salt_txt}"
                 )
         else:
             for uid, la, ji, re_val, tg in zip(v_uids, v_lat, v_jit, v_rel, v_tag):
@@ -955,7 +1062,7 @@ class DetectionPairplotWidget(QWidget):
                 )
 
         salt_thresh_log = (
-            float(np.log10(np.clip(salt_max, 1e-3, 1.0))) if salt_enabled else None
+            float(np.log10(np.clip(salt_max, self._salt_min_p, 1.0))) if salt_enabled else None
         )
 
         self._update_cell(
@@ -1019,7 +1126,7 @@ class DetectionPairplotWidget(QWidget):
             s_tag,
             focused_unit_id,
             x_bounds=(0.0, 20.0),
-            y_bounds=(-3.0, 0.0),
+            y_bounds=self._salt_y_bounds,
             x_thresh=lat_max if lat_enabled else None,
             x_le=True,
             y_thresh=salt_thresh_log,
@@ -1033,7 +1140,7 @@ class DetectionPairplotWidget(QWidget):
             s_tag,
             focused_unit_id,
             x_bounds=(0.0, 6.0),
-            y_bounds=(-3.0, 0.0),
+            y_bounds=self._salt_y_bounds,
             x_thresh=jit_max if jit_enabled else None,
             x_le=True,
             y_thresh=salt_thresh_log,
@@ -1047,7 +1154,7 @@ class DetectionPairplotWidget(QWidget):
             s_tag,
             focused_unit_id,
             x_bounds=(0.0, 1.0),
-            y_bounds=(-3.0, 0.0),
+            y_bounds=self._salt_y_bounds,
             x_thresh=rel_min if rel_enabled else None,
             x_le=False,
             y_thresh=salt_thresh_log,

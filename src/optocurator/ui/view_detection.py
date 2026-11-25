@@ -64,7 +64,9 @@ from optocurator.models import (
 from optocurator.ui.detection_widgets import (
     DetectionCriterionRow,
     DetectionPairplotWidget,
+    format_salt_p_value,
     install_combo_chevron,
+    salt_log_axis_spec,
 )
 from optocurator.ui.figure_export import install_figure_export_menu
 from optocurator.ui.plots import (
@@ -347,6 +349,7 @@ class DetectionView(QWidget):
 
         self._init_ui()
         self._init_shortcuts()
+        self._sync_salt_resolution()
         self._update_criteria_visuals()
         self._update_summary_box()
 
@@ -1357,6 +1360,7 @@ class DetectionView(QWidget):
         self.manual_overrides.clear()
         self.stats_params = StatsParameters.default()
         self._stats_params_customized = False
+        self._sync_salt_resolution()
         self._focused_unit_id = None
         self._channel_positions = None
         self._criteria_undo_stack.clear()
@@ -1444,17 +1448,33 @@ class DetectionView(QWidget):
         """Return protocol-matched default StatsParameters for the currently active protocol."""
         return self._default_stats_params_for_protocol(self._get_current_pulse_duration_ms())
 
+    def _sync_salt_resolution(self) -> None:
+        """Synchronize SALT p KDE axis, validator, and pairplot Y-axis with `salt_n_permutations`."""
+        n_perm = max(1, int(self.stats_params.salt_n_permutations))
+        p_min, p_max, ticks = salt_log_axis_spec(n_perm)
+        dec = max(4, abs(int(round(math.log10(p_min)))))
+        self.row_salt._salt_n_permutations = n_perm
+        self.row_salt.set_axis_range(
+            (p_min, p_max),
+            ticks=ticks,
+            min_val=min(0.0001, p_min),
+            decimals=dec,
+        )
+        self.pairplot_widget.set_salt_permutations(n_perm)
+
     def _apply_protocol_default_stats_params(self, reset_customized: bool = False) -> None:
         """Update stats_params to match the active protocol pulse duration unless customized."""
         if reset_customized:
             self._stats_params_customized = False
         if not self._stats_params_customized:
             self.stats_params = self.default_stats_parameters()
+            self._sync_salt_resolution()
 
     def update_stats_parameters(self, new_params: StatsParameters) -> None:
         """Update analytical metric hyperparameters and recompute metrics if session is loaded."""
         self.stats_params = new_params
         self._stats_params_customized = True
+        self._sync_salt_resolution()
         if self.units and self.current_protocol is not None:
             progress = QProgressDialog(
                 "Recalculating metrics with updated stats parameters...",
@@ -1618,7 +1638,7 @@ class DetectionView(QWidget):
             rel_str = f"{rel_val:.2f}"
 
             salt_val = m.salt_p_value if (m and np.isfinite(m.salt_p_value)) else 1.0
-            salt_str = "≤ 0.01" if salt_val <= 0.01 else f"{salt_val:.3f}"
+            salt_str = format_salt_p_value(salt_val, self.stats_params.salt_n_permutations)
 
             lik_val = float(getattr(m, "likelihood", 0.0)) if m else 0.0
             if not np.isfinite(lik_val):
@@ -2142,7 +2162,9 @@ class DetectionView(QWidget):
         )
         if focused_m is not None and np.isfinite(focused_m.salt_p_value):
             salt_val_f = float(focused_m.salt_p_value)
-            self.row_salt.lbl_focused_value.setText("≤ 0.01" if salt_val_f <= 0.01 else f"{salt_val_f:.3f}")
+            self.row_salt.lbl_focused_value.setText(
+                format_salt_p_value(salt_val_f, self.stats_params.salt_n_permutations)
+            )
 
     def _update_summary_box(self) -> None:
         total = self.table_units.rowCount()
@@ -2192,6 +2214,7 @@ class DetectionView(QWidget):
             salt_p_values=salts,
             salt_max=self.row_salt.threshold(),
             salt_enabled=self.row_salt.is_enabled(),
+            salt_n_permutations=self.stats_params.salt_n_permutations,
         )
 
     def _update_probe_widget(self) -> None:
@@ -2690,6 +2713,7 @@ class DetectionView(QWidget):
         self.current_protocol = proto
         self._stats_params_customized = False
         self.stats_params = StatsParameters.default()
+        self._sync_salt_resolution()
         self.combo_proto.blockSignals(True)
         self.combo_proto.clear()
         self.combo_proto.addItem("default", "default")
