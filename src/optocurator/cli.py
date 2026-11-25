@@ -6,7 +6,7 @@ from PyQt6.QtGui import QFont
 from PyQt6.QtWidgets import QApplication
 
 from optocurator import __version__
-from optocurator.ui.app import MainWindow
+from optocurator.ui.app import MainWindow, configure_c_locale
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -29,6 +29,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
+    configure_c_locale()
     app = QApplication(sys.argv[:1])
     app.setApplicationName("OptoCurator")
     app.setApplicationVersion(__version__)

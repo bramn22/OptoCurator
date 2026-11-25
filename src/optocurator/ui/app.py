@@ -2,7 +2,7 @@
 
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
-from PyQt6.QtCore import QEvent, QObject, QPoint, QRectF, QSettings, QSize, Qt
+from PyQt6.QtCore import QEvent, QLocale, QObject, QPoint, QRectF, QSettings, QSize, Qt
 from PyQt6.QtGui import QAction, QColor, QFont, QFontMetrics, QIcon, QKeySequence, QPainter, QPen, QPixmap
 from PyQt6.QtWidgets import (
     QAbstractButton,
@@ -73,6 +73,13 @@ from optocurator.ui.view_launcher import LauncherDashboardWidget
 
 
 _make_app_mark_icon = make_app_mark_icon
+
+
+def configure_c_locale() -> None:
+    """Enforce C locale (strictly '.' decimal point, no group separators) across Qt widgets."""
+    c_locale = QLocale.c()
+    c_locale.setNumberOptions(QLocale.NumberOption.RejectGroupSeparator)
+    QLocale.setDefault(c_locale)
 
 
 class StatusToggleSwitch(QAbstractButton):
@@ -220,6 +227,7 @@ class MainWindow(QMainWindow):
     VIEW_CLUSTERING = 2
 
     def __init__(self) -> None:
+        configure_c_locale()
         super().__init__()
         self.setWindowTitle("OptoCurator — Optotagged Cell Detection & Response Clustering")
         self.resize(1340, 860)

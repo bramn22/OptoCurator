@@ -3,7 +3,7 @@
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 import numpy as np
 import pyqtgraph as pg
-from PyQt6.QtCore import QPointF, QRectF, QSize, Qt, pyqtSignal
+from PyQt6.QtCore import QLocale, QPointF, QRectF, QSize, Qt, pyqtSignal
 from PyQt6.QtGui import QColor, QDoubleValidator, QFontMetrics, QPainter, QPainterPath, QPen
 from PyQt6.QtWidgets import (
     QCheckBox,
@@ -307,6 +307,9 @@ class DetectionCriterionRow(QWidget):
         self.edit_threshold.setStyleSheet(DETECTION_CRITERION_INPUT_STYLE)
         validator = QDoubleValidator(self._min_val, self._max_val, max(self._decimals, 4), self.edit_threshold)
         validator.setNotation(QDoubleValidator.Notation.StandardNotation)
+        c_locale = QLocale.c()
+        c_locale.setNumberOptions(QLocale.NumberOption.RejectGroupSeparator)
+        validator.setLocale(c_locale)
         self.edit_threshold.setValidator(validator)
         self.edit_threshold.textChanged.connect(self._on_threshold_text_changed)
         self.edit_threshold.editingFinished.connect(self._on_threshold_edited)
