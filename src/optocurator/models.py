@@ -30,7 +30,6 @@ class UnitData:
     channel: int = 0
     depth: float = 0.0
     probe_x: float = 0.0
-    waveforms: Optional[np.ndarray] = None  # shape: (n_spikes, n_samples); 2D array per spike
 
     @property
     def global_id(self) -> str:
@@ -55,7 +54,6 @@ class UnitMetrics:
     latency_ms: float
     jitter_ms: float
     reliability: float               # Evoked response probability [0, 1]
-    waveform_correlation: float      # Pearson r between spontaneous and evoked
     salt_p_value: float              # Stimulus-associated spike latency test p-value
     is_tagged: bool = False
     cluster_id: int = -1
@@ -99,15 +97,6 @@ class StatsParameters:
         if self.salt_exclusion_enabled:
             return (self.salt_exclusion_window_start_ms, self.salt_exclusion_window_end_ms)
         return None
-
-    # Waveform correlation
-    wf_evoked_start_ms: float = 0.0
-    wf_evoked_end_ms: float = 20.0
-    wf_baseline_start_ms: float = -50.0
-    wf_baseline_end_ms: float = -5.0
-    wf_window_start_ms: float = -1.0
-    wf_window_end_ms: float = 2.0
-    wf_max_spikes: int = 40
 
     @classmethod
     def default(cls) -> "StatsParameters":

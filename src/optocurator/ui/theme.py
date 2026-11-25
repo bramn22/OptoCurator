@@ -108,8 +108,6 @@ COLOR_SEEDED: str = "#8E7CC3"            # Seeded status
 
 COLOR_POPULATION_CURVE: str = "#94A3B8"  # Population KDE curve / subtle overlay
 COLOR_KDE_POP_FILL: str = "#E1E4E8"      # Population KDE area fill
-COLOR_WAVEFORM_SPONT: str = "#D55E00"    # Spontaneous waveform (vermilion)
-COLOR_WAVEFORM_EVOKED: str = "#0072B2"   # Light-evoked waveform (blue)
 COLOR_CANDIDATE_MARKER: str = "#DC2626"  # Candidate line / marker
 
 # Additional semantic surface / probe / status tokens
@@ -271,15 +269,13 @@ CLUSTER_CARD_SIZE: Tuple[int, int] = (217, 148)
 PLOT_DETECTION_RASTER_SIZE: Tuple[int, int] = (520, 240)
 PLOT_DETECTION_PSTH_SIZE: Tuple[int, int] = (520, 100)
 PLOT_DETECTION_LEFT_MARGIN: int = 52
-PLOT_WAVEFORM_SIZE: Tuple[int, int] = (240, 134)
 PLOT_CRITERION_KDE_SIZE: Tuple[int, int] = (240, 24)
 
 DETECTION_RASTER_SIZE: Tuple[int, int] = PLOT_DETECTION_RASTER_SIZE
 DETECTION_PSTH_SIZE: Tuple[int, int] = PLOT_DETECTION_PSTH_SIZE
 DETECTION_PLOT_LEFT_MARGIN: int = PLOT_DETECTION_LEFT_MARGIN
-DETECTION_WAVEFORM_PLOT_SIZE: Tuple[int, int] = PLOT_WAVEFORM_SIZE
 DETECTION_CRITERION_PLOT_SIZE: Tuple[int, int] = PLOT_CRITERION_KDE_SIZE
-DETECTION_PAIRPLOT_CELL_SIZE: Tuple[int, int] = (167, 167)
+DETECTION_PAIRPLOT_CELL_SIZE: Tuple[int, int] = (171, 140)
 
 PSTH_LINE_WIDTH: float = 1.5
 
@@ -1103,9 +1099,6 @@ TOOLBAR_SPIN_STYLE: str = (
 )
 DETECTION_UNIT_TITLE_STYLE: str = (
     f"font-size: {FONT_SIZE_HEADER_TITLE}px; font-weight: 700; color: {COLOR_TEXT};"
-)
-DETECTION_WAVEFORM_LEGEND_STYLE: str = (
-    f"font-size: {FONT_SIZE_CAPTION}px; color: {COLOR_TEXT_SECONDARY}; font-weight: 500;"
 )
 
 
@@ -2463,21 +2456,6 @@ DETECTION_WINDOW_INPUT_STYLE: str = f"""
     }}
 """
 
-DETECTION_WAVEFORM_LEGEND_STYLE: str = (
-    f"color: {COLOR_TEXT}; font-size: {FONT_SIZE_CAPTION}px; "
-    f"font-weight: 500; background-color: transparent;"
-)
-
-DETECTION_WAVEFORM_NOTE_STYLE: str = (
-    f"color: {COLOR_TEXT_MUTED}; font-size: {FONT_SIZE_TICK}px; "
-    f"background-color: transparent;"
-)
-
-DETECTION_WAVEFORM_R_STYLE: str = (
-    f"color: {COLOR_TEXT}; font-family: {FONT_FAMILY_MONO}; "
-    f"font-size: {FONT_SIZE_BODY}px; font-weight: 600; background-color: transparent;"
-)
-
 DETECTION_PAIRPLOT_LEGEND_STYLE: str = (
     f"color: {COLOR_TEXT_SECONDARY}; font-size: {FONT_SIZE_TICK}px; "
     f"background-color: transparent;"
@@ -2576,14 +2554,6 @@ DETECTION_PROBE_LEGEND_HTML: str = (
     f"<span style='color:{COLOR_SUCCESS};'>&#9679;</span> Tagged<br>"
     f"<span style='color:{COLOR_UNASSIGNED};'>&#9679;</span> Untagged<br>"
     f"<span style='color:{COLOR_ACCENT}; font-weight:700;'>&#9675;</span> Focused unit"
-)
-
-DETECTION_WAVEFORM_SPONT_LEGEND_HTML: str = (
-    f"<span style='color:{COLOR_WAVEFORM_SPONT}; font-weight:700;'>&#9473;</span> Spontaneous"
-)
-
-DETECTION_WAVEFORM_EVOKED_LEGEND_HTML: str = (
-    f"<span style='color:{COLOR_WAVEFORM_EVOKED}; font-weight:700;'>&#9473;</span> Light-evoked"
 )
 
 DETECTION_PAIRPLOT_LEGEND_HTML: str = (

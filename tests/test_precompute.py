@@ -78,9 +78,9 @@ def test_batch_precompute_plots_only_tagged(tmp_path: Path):
     ]
 
     metrics_map = {
-        0: UnitMetrics(units[0].global_id, "sessA", 0, "", 4.0, 0.5, 1.0, 1.0, 0.001, is_tagged=True),
-        1: UnitMetrics(units[1].global_id, "sessA", 1, "", 25.0, 5.0, 0.1, 0.8, 0.800, is_tagged=False),
-        2: UnitMetrics(units[2].global_id, "sessA", 2, "", 5.0, 0.8, 0.9, 1.0, 0.002, is_tagged=True),
+        0: UnitMetrics(units[0].global_id, "sessA", 0, "", 4.0, 0.5, 1.0, 0.001, is_tagged=True),
+        1: UnitMetrics(units[1].global_id, "sessA", 1, "", 25.0, 5.0, 0.1, 0.800, is_tagged=False),
+        2: UnitMetrics(units[2].global_id, "sessA", 2, "", 5.0, 0.8, 0.9, 0.002, is_tagged=True),
     }
 
     out_dir = tmp_path / "plots_tagged_only"

@@ -65,7 +65,6 @@ from optocurator.ui.theme import (
     PLOT_UNIT_RESPONSE_LEFT_MARGIN,
     PLOT_UNIT_RESPONSE_PSTH_SIZE,
     PLOT_UNIT_RESPONSE_RASTER_SIZE,
-    PLOT_WAVEFORM_SIZE,
     PSTH_LINE_WIDTH,
     color_for_cluster,
     make_font,
@@ -159,7 +158,6 @@ def test_wp1_fixed_plot_sizes():
     assert PLOT_DETECTION_RASTER_SIZE == (520, 240)
     assert PLOT_DETECTION_PSTH_SIZE == (520, 100)
     assert PLOT_DETECTION_LEFT_MARGIN == 52
-    assert PLOT_WAVEFORM_SIZE == (240, 134)
     assert PLOT_CRITERION_KDE_SIZE == (240, 24)
 
     # PSTH line width (§ 8.2)

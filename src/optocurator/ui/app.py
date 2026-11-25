@@ -1465,8 +1465,8 @@ class MainWindow(QMainWindow):
         doc_text = (
             "<b>OptoCurator Documentation</b><br><br>"
             "<b>1. Detection mode:</b> Load a Kilosort/Phy experiment folder or an NWB (.nwb) file, "
-            "inspect light-evoked rasters, PSTHs, and waveforms, tune statistical tagging criteria "
-            "(latency, jitter, reliability, SALT p, waveform correlation), and save curated results to disk.<br><br>"
+            "inspect light-evoked rasters and PSTHs, tune statistical tagging criteria "
+            "(latency, jitter, reliability, SALT p), and save curated results to disk.<br><br>"
             "<b>2. Clustering mode:</b> Create or open a clustering project folder, pool tagged units "
             "across multiple experiments, seed or run unsupervised clustering, and refine response "
             "types interactively with active learning and confidence-thresholded auto-assignment."

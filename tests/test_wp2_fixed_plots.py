@@ -167,7 +167,6 @@ def test_inferred_pulse_duration_shading_detection_and_clustering(qapp, tmp_path
         session_id="sess_28ms",
         spike_times=np.sort(onsets + 0.005),
         sampling_rate=30000.0,
-        waveforms=None,
         channel=0,
         depth=100.0,
         probe_x=0.0,

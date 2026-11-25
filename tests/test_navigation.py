@@ -37,7 +37,6 @@ def test_models_dataclasses():
         latency_ms=4.5,
         jitter_ms=1.2,
         reliability=0.88,
-        waveform_correlation=0.96,
         salt_p_value=0.0005,
         is_tagged=True,
     )
@@ -127,18 +126,18 @@ def test_detection_view_slider_interaction(qapp):
     view._load_mock_data()
 
     # Default: u0001 (lat=4.2, rel=0.85) should be Tagged
-    status_0 = view.table_units.item(0, 7).text()
+    status_0 = view.table_units.item(0, 6).text()
     assert status_0 == "✓"
 
     # Restrict max latency to 3.0 ms -> u0001 should become Untagged
     view.spin_latency.setValue(3.0)
     view._apply_thresholds()
-    assert view.table_units.item(0, 7).text() == "○"
+    assert view.table_units.item(0, 6).text() == "○"
 
     # Loosen max latency to 10.0 ms -> u0001 should become Tagged again
     view.spin_latency.setValue(10.0)
     view._apply_thresholds()
-    assert view.table_units.item(0, 7).text() == "✓"
+    assert view.table_units.item(0, 6).text() == "✓"
 
 
 def test_cli_preload_experiment(qapp):

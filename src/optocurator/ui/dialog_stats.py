@@ -286,80 +286,6 @@ class StatsParametersDialog(QDialog):
         layout_salt.addLayout(form_salt)
         scroll_layout.addWidget(group_salt)
 
-        # Section 5: Waveform Correlation
-        group_wf = QGroupBox("5. Waveform Correlation")
-        group_wf.setStyleSheet(DIALOG_GROUP_BOX_STYLE)
-        layout_wf = QVBoxLayout(group_wf)
-        layout_wf.setSpacing(8)
-
-        desc_wf = QLabel(
-            "• Calculation: Pearson correlation (r) between the mean light-evoked spike waveform "
-            "(spikes inside the evoked window) and the mean spontaneous waveform (spikes inside the baseline window) "
-            "on the unit's peak channel."
-        )
-        desc_wf.setWordWrap(True)
-        desc_wf.setStyleSheet(DIALOG_DESCRIPTION_STYLE)
-        layout_wf.addWidget(desc_wf)
-
-        form_wf = QFormLayout()
-        form_wf.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
-        form_wf.setSpacing(8)
-
-        self.edit_wf_evoked_start = QLineEdit()
-        self.edit_wf_evoked_start.setStyleSheet(line_edit_style)
-        self.edit_wf_evoked_start.setToolTip(
-            f"Start of light-evoked waveform window relative to pulse onset in ms (default: {self._default_params.wf_evoked_start_ms:.1f})"
-        )
-        form_wf.addRow("Evoked Window Start (ms):", self.edit_wf_evoked_start)
-
-        self.edit_wf_evoked_end = QLineEdit()
-        self.edit_wf_evoked_end.setStyleSheet(line_edit_style)
-        self.edit_wf_evoked_end.setToolTip(
-            f"End of light-evoked waveform window relative to pulse onset in ms (default: {self._default_params.wf_evoked_end_ms:.1f})"
-        )
-        form_wf.addRow("Evoked Window End (ms):", self.edit_wf_evoked_end)
-
-        self.edit_wf_baseline_start = QLineEdit()
-        self.edit_wf_baseline_start.setStyleSheet(line_edit_style)
-        self.edit_wf_baseline_start.setToolTip(
-            f"Start of spontaneous baseline waveform window in ms (default: {self._default_params.wf_baseline_start_ms:.1f})"
-        )
-        form_wf.addRow("Baseline Window Start (ms):", self.edit_wf_baseline_start)
-
-        self.edit_wf_baseline_end = QLineEdit()
-        self.edit_wf_baseline_end.setStyleSheet(line_edit_style)
-        self.edit_wf_baseline_end.setToolTip(
-            f"End of spontaneous baseline waveform window in ms (default: {self._default_params.wf_baseline_end_ms:.1f})"
-        )
-        form_wf.addRow("Baseline Window End (ms):", self.edit_wf_baseline_end)
-
-        self.edit_wf_window_start = QLineEdit()
-        self.edit_wf_window_start.setStyleSheet(line_edit_style)
-        self.edit_wf_window_start.setToolTip(
-            f"Start of extracted spike waveform snippet window in ms (default: {self._default_params.wf_window_start_ms:.1f})"
-        )
-        self.edit_wf_window_end = QLineEdit()
-        self.edit_wf_window_end.setStyleSheet(line_edit_style)
-        self.edit_wf_window_end.setToolTip(
-            f"End of extracted spike waveform snippet window in ms (default: {self._default_params.wf_window_end_ms:.1f})"
-        )
-        wf_win_row = QHBoxLayout()
-        wf_win_row.setSpacing(6)
-        wf_win_row.addWidget(self.edit_wf_window_start)
-        wf_win_row.addWidget(QLabel("to"))
-        wf_win_row.addWidget(self.edit_wf_window_end)
-        form_wf.addRow("Waveform window (ms):", wf_win_row)
-
-        self.edit_wf_max_spikes = QLineEdit()
-        self.edit_wf_max_spikes.setStyleSheet(line_edit_style)
-        self.edit_wf_max_spikes.setToolTip(
-            f"Maximum number of spikes per group (evoked / spontaneous) for waveform extraction and plotting (default: {self._default_params.wf_max_spikes})"
-        )
-        form_wf.addRow("Max spikes per group:", self.edit_wf_max_spikes)
-
-        layout_wf.addLayout(form_wf)
-        scroll_layout.addWidget(group_wf)
-
         scroll_area.setWidget(scroll_widget)
         dialog_layout.addWidget(scroll_area)
 
@@ -416,15 +342,6 @@ class StatsParametersDialog(QDialog):
         self.edit_salt_excl_end.setText(f"{p.salt_exclusion_window_end_ms:.1f}")
         self.edit_salt_excl_start.setEnabled(p.salt_exclusion_enabled)
         self.edit_salt_excl_end.setEnabled(p.salt_exclusion_enabled)
-
-        # Waveform correlation
-        self.edit_wf_evoked_start.setText(f"{p.wf_evoked_start_ms:.1f}")
-        self.edit_wf_evoked_end.setText(f"{p.wf_evoked_end_ms:.1f}")
-        self.edit_wf_baseline_start.setText(f"{p.wf_baseline_start_ms:.1f}")
-        self.edit_wf_baseline_end.setText(f"{p.wf_baseline_end_ms:.1f}")
-        self.edit_wf_window_start.setText(f"{p.wf_window_start_ms:.1f}")
-        self.edit_wf_window_end.setText(f"{p.wf_window_end_ms:.1f}")
-        self.edit_wf_max_spikes.setText(str(p.wf_max_spikes))
 
     def _reset_defaults(self) -> None:
         """Reset text inputs to configured default parameters."""
@@ -515,46 +432,6 @@ class StatsParametersDialog(QDialog):
                 )
                 return
 
-            # 5. Waveform Correlation
-            wf_evoked_start = float(self.edit_wf_evoked_start.text().strip())
-            wf_evoked_end = float(self.edit_wf_evoked_end.text().strip())
-            if wf_evoked_start >= wf_evoked_end:
-                QMessageBox.warning(
-                    self,
-                    "Invalid Evoked Waveform Window",
-                    "Evoked waveform window start must be less than window end.",
-                )
-                return
-
-            wf_baseline_start = float(self.edit_wf_baseline_start.text().strip())
-            wf_baseline_end = float(self.edit_wf_baseline_end.text().strip())
-            if wf_baseline_start >= wf_baseline_end:
-                QMessageBox.warning(
-                    self,
-                    "Invalid Baseline Waveform Window",
-                    "Baseline waveform window start must be less than window end.",
-                )
-                return
-
-            wf_window_start = float(self.edit_wf_window_start.text().strip())
-            wf_window_end = float(self.edit_wf_window_end.text().strip())
-            if wf_window_start >= wf_window_end:
-                QMessageBox.warning(
-                    self,
-                    "Invalid Waveform Window",
-                    "Waveform window start must be less than window end.",
-                )
-                return
-
-            wf_max_spikes = int(self.edit_wf_max_spikes.text().strip())
-            if wf_max_spikes < 1:
-                QMessageBox.warning(
-                    self,
-                    "Invalid Max Spikes",
-                    "Max spikes per group must be an integer >= 1.",
-                )
-                return
-
         except ValueError as err:
             QMessageBox.warning(self, "Invalid Numerical Value", f"Please check all text inputs for valid numbers.\n\nError: {err}")
             return
@@ -578,13 +455,6 @@ class StatsParametersDialog(QDialog):
             salt_exclusion_enabled=salt_excl_enabled,
             salt_exclusion_window_start_ms=salt_excl_start,
             salt_exclusion_window_end_ms=salt_excl_end,
-            wf_evoked_start_ms=wf_evoked_start,
-            wf_evoked_end_ms=wf_evoked_end,
-            wf_baseline_start_ms=wf_baseline_start,
-            wf_baseline_end_ms=wf_baseline_end,
-            wf_window_start_ms=wf_window_start,
-            wf_window_end_ms=wf_window_end,
-            wf_max_spikes=wf_max_spikes,
         )
         self.accept()
 

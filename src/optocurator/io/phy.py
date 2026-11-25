@@ -1,13 +1,32 @@
 """Phy / Kilosort spike sorted data reader."""
 
+import ast
 import math
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 import numpy as np
 import pandas as pd
 
-from optocurator.analysis.waveform import _parse_params_py
 from optocurator.models import DEFAULT_SAMPLING_RATE_HZ, UnitData
+
+
+def _parse_params_py(params_path: Path) -> Dict[str, Any]:
+    """Safely parse literal assignments from a Phy/Kilosort params.py file."""
+    parsed: Dict[str, Any] = {}
+    if not params_path.exists():
+        return parsed
+    try:
+        tree = ast.parse(params_path.read_text(encoding="utf-8", errors="ignore"))
+        for node in tree.body:
+            if isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name):
+                key = node.targets[0].id
+                try:
+                    parsed[key] = ast.literal_eval(node.value)
+                except (ValueError, SyntaxError):
+                    continue
+    except OSError:
+        return parsed
+    return parsed
 
 
 def timestamps_to_seconds(arr: np.ndarray, sampling_rate: float) -> np.ndarray:

@@ -8900,7 +8900,6 @@ class ClusteringView(QWidget):
                     "latency_ms": lat,
                     "jitter_ms": 1.2,
                     "reliability": rel,
-                    "waveform_correlation": 0.95,
                     "salt_p_value": salt_p,
                     "is_tagged": True,
                     "cluster_id": -1,

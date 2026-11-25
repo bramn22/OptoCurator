@@ -36,14 +36,6 @@ from optocurator.analysis.precompute import (
     render_compound_psth_raster,
 )
 from optocurator.analysis.salt import compute_salt_p_value, jensen_shannon_divergence
-from optocurator.analysis.waveform import (
-    compute_unit_waveform_correlation,
-    compute_wf_r,
-    extract_evoked_and_spontaneous_snippets,
-    extract_session_waveforms,
-    split_evoked_and_spontaneous_spikes,
-    subsample_indices,
-)
 
 __all__ = [
     "compute_first_spike_latency_and_jitter",
@@ -59,12 +51,6 @@ __all__ = [
     "compute_population_spreads",
     "compute_unit_likelihood",
     "compute_session_likelihoods",
-    "split_evoked_and_spontaneous_spikes",
-    "subsample_indices",
-    "extract_evoked_and_spontaneous_snippets",
-    "compute_wf_r",
-    "compute_unit_waveform_correlation",
-    "extract_session_waveforms",
     "CLUSTER_PALETTE",
     "FeatureConfiguration",
     "ClusteringParameters",

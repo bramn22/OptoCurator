@@ -171,41 +171,6 @@ def test_unit_and_session_metrics():
     assert session_metrics[1].is_tagged is False
 
 
-def test_waveform_correlation():
-    """Verify Pearson waveform correlation calculation between spontaneous and evoked spikes."""
-    from optocurator.analysis.waveform import compute_unit_waveform_correlation
-
-    pulse_onsets = np.array([1.0, 2.0, 3.0])
-    # 3 evoked spikes (t = pulse + 5ms) and 3 spontaneous spikes (t = pulse - 20ms)
-    spike_times = np.array([0.980, 1.005, 1.980, 2.005, 2.980, 3.005])
-
-    # Case 1: Identical canonical action potential shapes
-    t = np.linspace(-1, 1, 50)
-    canonical_wf = -np.exp(-t**2 / 0.1) + 0.3 * np.exp(-(t - 0.3)**2 / 0.05)
-
-    # 6 spikes with small noise
-    rng = np.random.default_rng(42)
-    waveforms_identical = np.tile(canonical_wf, (6, 1)) + rng.normal(0, 0.01, (6, 50))
-
-    r_high = compute_unit_waveform_correlation(
-        waveforms_identical, spike_times, pulse_onsets, eval_window_ms=(0.0, 20.0), baseline_window_ms=(-50.0, -5.0)
-    )
-    assert r_high > 0.95
-
-    # Case 2: Inverted waveform for evoked spikes
-    waveforms_inverted = np.zeros((6, 50))
-    waveforms_inverted[[0, 2, 4]] = canonical_wf          # spontaneous
-    waveforms_inverted[[1, 3, 5]] = -canonical_wf         # evoked
-    r_inv = compute_unit_waveform_correlation(
-        waveforms_inverted, spike_times, pulse_onsets, eval_window_ms=(0.0, 20.0), baseline_window_ms=(-50.0, -5.0)
-    )
-    assert r_inv < -0.90
-
-    # Case 3: Waveforms is None returns NaN
-    r_none = compute_unit_waveform_correlation(None, spike_times, pulse_onsets)
-    assert np.isnan(r_none)
-
-
 def test_psth_and_raster_latency_ordering():
     """Verify that optogenetic pulses can be ordered by first-spike latency."""
     pulse_onsets = np.array([1.0, 2.0, 3.0, 4.0])

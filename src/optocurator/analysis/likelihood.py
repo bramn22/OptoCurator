@@ -14,7 +14,6 @@ _METRIC_FIELDS = frozenset(
         "jitter_ms",
         "reliability",
         "salt_p_value",
-        "waveform_correlation",
     }
 )
 
@@ -100,8 +99,6 @@ def compute_unit_likelihood(
             continue
 
         val = _get_metric_value(metrics, spec.name)
-        if spec.name == "waveform_correlation" and (val is None or not np.isfinite(val)):
-            continue
 
         if val is None or not np.isfinite(val):
             product = 0.0

@@ -1,10 +1,9 @@
-"""Analytical metrics for optotagging evaluation (PSTH, latency, jitter, reliability, waveform r, SALT)."""
+"""Analytical metrics for optotagging evaluation (PSTH, latency, jitter, reliability, SALT)."""
 
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 import numpy as np
 
 from optocurator.analysis.salt import compute_salt_p_values_parallel
-from optocurator.analysis.waveform import compute_unit_waveform_correlation
 from optocurator.models import (
     MISSING_METRIC_SENTINEL,
     StatsParameters,
@@ -372,7 +371,6 @@ def compute_unit_metrics(
     max_latency_ms: float = 8.0,
     max_jitter_ms: float = 2.0,
     min_reliability: float = 0.60,
-    min_waveform_r: float = 0.90,
     max_salt_p: float = 0.05,
     plot_rel_path: str = "",
     stats_params: Optional[StatsParameters] = None,
@@ -385,7 +383,6 @@ def compute_unit_metrics(
         max_latency_ms=max_latency_ms,
         max_jitter_ms=max_jitter_ms,
         min_reliability=min_reliability,
-        min_waveform_r=min_waveform_r,
         max_salt_p=max_salt_p,
         stats_params=stats_params,
         n_workers=1,
@@ -402,7 +399,6 @@ def compute_session_metrics(
     max_latency_ms: float = 8.0,
     max_jitter_ms: float = 2.0,
     min_reliability: float = 0.60,
-    min_waveform_r: float = 0.90,
     max_salt_p: float = 0.05,
     stats_params: Optional[StatsParameters] = None,
     n_workers: Optional[int] = None,
@@ -417,7 +413,6 @@ def compute_session_metrics(
         max_latency_ms: Cutoff for maximum first-spike latency.
         max_jitter_ms: Cutoff for maximum jitter.
         min_reliability: Cutoff for minimum response reliability.
-        min_waveform_r: Cutoff for minimum waveform correlation.
         max_salt_p: Cutoff for maximum SALT p-value.
         stats_params: Optional StatsParameters instance containing detailed analytical hyperparameters.
         n_workers: Number of worker processes (defaults to os.cpu_count()).
@@ -434,8 +429,6 @@ def compute_session_metrics(
     salt_base_win = (-50.0, 0.0)
     salt_bins = 10
     salt_perms = 100
-    wf_eval_win = eval_window_ms
-    wf_spont_win = (-50.0, -5.0)
 
     if stats_params is not None:
         rel_win = (stats_params.reliability_window_start_ms, stats_params.reliability_window_end_ms)
@@ -450,8 +443,6 @@ def compute_session_metrics(
         salt_bins = stats_params.salt_n_bins
         salt_perms = stats_params.salt_n_permutations
         salt_excl_win = stats_params.salt_exclusion_window_ms
-        wf_eval_win = (stats_params.wf_evoked_start_ms, stats_params.wf_evoked_end_ms)
-        wf_spont_win = (stats_params.wf_baseline_start_ms, stats_params.wf_baseline_end_ms)
     else:
         rel_win = eval_window_ms
         rel_trials = max_trials
@@ -465,9 +456,8 @@ def compute_session_metrics(
         salt_perms = 100
         salt_excl_win = None
 
-    wf_max_spikes = stats_params.wf_max_spikes if stats_params is not None else 40
-    # 1. Fast vectorized pass for latency, jitter, reliability, and waveform correlation
-    preliminary: List[Tuple[float, float, float, float]] = []
+    # 1. Fast vectorized pass for latency, jitter, and reliability
+    preliminary: List[Tuple[float, float, float]] = []
     active_indices: List[int] = []
     active_spikes: List[np.ndarray] = []
 
@@ -486,15 +476,7 @@ def compute_session_metrics(
             lat_ms, jit_ms, rel = compute_first_spike_latency_and_jitter(
                 u.spike_times, stimulus.onsets, eval_window_ms=eval_window_ms, max_trials=max_trials
             )
-        wv_r = compute_unit_waveform_correlation(
-            u.waveforms,
-            u.spike_times,
-            stimulus.onsets,
-            eval_window_ms=wf_eval_win,
-            baseline_window_ms=wf_spont_win,
-            max_spikes_per_group=wf_max_spikes,
-        )
-        preliminary.append((lat_ms, jit_ms, rel, wv_r))
+        preliminary.append((lat_ms, jit_ms, rel))
 
         if _has_spike_in_window(u.spike_times, stimulus.onsets, salt_eval_win):
             active_indices.append(idx)
@@ -524,7 +506,7 @@ def compute_session_metrics(
     # 3. Assemble UnitMetrics for all units
     metrics_list: List[UnitMetrics] = []
     for idx, u in enumerate(units):
-        lat_ms, jit_ms, rel, wv_r = preliminary[idx]
+        lat_ms, jit_ms, rel = preliminary[idx]
         salt_p = salt_p_map.get(idx, 1.0)
 
         is_tagged = bool(
@@ -532,7 +514,6 @@ def compute_session_metrics(
             and (lat_ms <= max_latency_ms)
             and (rel >= min_reliability)
             and (np.isnan(jit_ms) or jit_ms <= max_jitter_ms)
-            and ((not np.isfinite(wv_r)) or (wv_r >= min_waveform_r))
             and (salt_p <= max_salt_p)
         )
 
@@ -546,7 +527,6 @@ def compute_session_metrics(
                 latency_ms=lat_ms if not np.isnan(lat_ms) else MISSING_METRIC_SENTINEL,
                 jitter_ms=jit_ms if not np.isnan(jit_ms) else MISSING_METRIC_SENTINEL,
                 reliability=rel,
-                waveform_correlation=wv_r,
                 salt_p_value=salt_p,
                 is_tagged=is_tagged,
             )

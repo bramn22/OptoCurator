@@ -338,7 +338,6 @@ class NwbSpikeReader:
                         session_id=session_id,
                         spike_times=spks,
                         sampling_rate=self.sampling_rate,
-                        waveforms=None,
                         channel=int(u_channel),
                         depth=float(u_depth),
                         probe_x=float(u_x),

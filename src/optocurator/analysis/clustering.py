@@ -1191,7 +1191,7 @@ def _feature_population_rms_scale(feat_matrix: np.ndarray) -> float:
 
 def _candidate_feature_values(row: pd.Series) -> Dict[str, float]:
     """Extract display metric dictionary from a unit row, preserving NaN for missing/non-finite entries."""
-    keys = ("latency_ms", "jitter_ms", "reliability", "waveform_correlation", "salt_p_value")
+    keys = ("latency_ms", "jitter_ms", "reliability", "salt_p_value")
     out: Dict[str, float] = {}
     for k in keys:
         val = row.get(k, float("nan"))

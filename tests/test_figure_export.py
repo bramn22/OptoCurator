@@ -180,7 +180,7 @@ def test_export_silicon_probe_widget_to_svg(qapp: QApplication, tmp_path: Path) 
 
 
 def test_export_detection_pairplot_widget_to_svg(qapp: QApplication, tmp_path: Path) -> None:
-    """Exporting DetectionPairplotWidget yields valid vector SVG with scatter paths."""
+    """Exporting 3x3 DetectionPairplotWidget and its SALT subplots yields valid vector SVGs."""
     pairplot = DetectionPairplotWidget()
     pairplot.set_data(
         unit_ids=[0, 1, 2, 3, 4],
@@ -189,11 +189,20 @@ def test_export_detection_pairplot_widget_to_svg(qapp: QApplication, tmp_path: P
         reliabilities=[0.95, 0.85, 0.70, 0.30, 0.10],
         is_tagged=[True, True, False, False, False],
         focused_unit_id=0,
+        salt_p_values=[0.001, 0.005, 0.04, 0.25, 0.80],
     )
     qapp.processEvents()
 
     out = export_widget_to_svg(pairplot, tmp_path / "detection_pairplot.svg")
     _assert_valid_vector_svg(out, require_paths=True)
+
+    for name, sub_plot in (
+        ("salt_lat", pairplot.plot_salt_lat),
+        ("salt_jit", pairplot.plot_salt_jit),
+        ("salt_rel", pairplot.plot_salt_rel),
+    ):
+        sub_out = export_widget_to_svg(sub_plot, tmp_path / f"detection_pairplot_{name}.svg")
+        _assert_valid_vector_svg(sub_out, require_paths=True)
 
 
 def test_export_detection_view_canvas_and_criteria_to_svg(qapp: QApplication, tmp_path: Path) -> None:
@@ -483,10 +492,16 @@ def test_stationary_right_click_builds_expected_menus_on_composite_and_single_wi
     assert len(captured) == 2
     assert captured[-1][1] == ["Save Raster + PSTH as SVG…", "Save PSTH as SVG…"]
 
-    # DetectionPairplotWidget
+    # DetectionPairplotWidget (including the 3 SALT subplots)
     pairplot = DetectionPairplotWidget()
-    QApplication.sendEvent(pairplot.plot_jit_lat.viewport(), _make_context_menu_event(QPoint(10, 10), QPoint(120, 120)))
-    assert captured[-1][1] == ["Save pairplot as SVG…", "Save this subplot as SVG…"]
+    for sub_plot in (
+        pairplot.plot_jit_lat,
+        pairplot.plot_salt_lat,
+        pairplot.plot_salt_jit,
+        pairplot.plot_salt_rel,
+    ):
+        QApplication.sendEvent(sub_plot.viewport(), _make_context_menu_event(QPoint(10, 10), QPoint(120, 120)))
+        assert captured[-1][1] == ["Save pairplot as SVG…", "Save this subplot as SVG…"]
 
     # MarginalDistributionsWidget
     marg = MarginalDistributionsWidget()

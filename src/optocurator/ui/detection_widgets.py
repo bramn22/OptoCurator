@@ -32,8 +32,6 @@ from optocurator.ui.theme import (
     COLOR_TEXT,
     COLOR_TEXT_MUTED,
     COLOR_TEXT_SECONDARY,
-    COLOR_WAVEFORM_EVOKED,
-    COLOR_WAVEFORM_SPONT,
     DETECTION_CRITERION_ICON_FAIL_STYLE,
     DETECTION_CRITERION_ICON_PASS_STYLE,
     DETECTION_CRITERION_INPUT_STYLE,
@@ -50,25 +48,15 @@ from optocurator.ui.theme import (
     DETECTION_PAIRPLOT_CELL_SIZE,
     DETECTION_PAIRPLOT_LEGEND_HTML,
     DETECTION_PAIRPLOT_LEGEND_STYLE,
-    DETECTION_SUBPANEL_META_STYLE,
+    DETECTION_PLOT_LEFT_MARGIN,
     DETECTION_SUBPANEL_TITLE_STYLE,
-    DETECTION_WAVEFORM_EVOKED_LEGEND_HTML,
-    DETECTION_WAVEFORM_LEGEND_STYLE,
-    DETECTION_WAVEFORM_SPONT_LEGEND_HTML,
-    DETECTION_WAVEFORM_NOTE_STYLE,
-    DETECTION_WAVEFORM_PLOT_SIZE,
-    DETECTION_WAVEFORM_R_STYLE,
-    DETECTION_WINDOW_INPUT_STYLE,
     rgba_from_hex,
 )
 
 _CRITERION_AXIS_HEIGHT: int = 20
 _CRITERION_ROW_HEIGHT: int = 66
-_WAVEFORM_LEFT_MARGIN: int = 38
-_WAVEFORM_BOTTOM_HEIGHT: int = 26
-_PAIRPLOT_LEFT_MARGIN: int = 46
+_PAIRPLOT_LEFT_MARGIN: int = DETECTION_PLOT_LEFT_MARGIN
 _PAIRPLOT_BOTTOM_HEIGHT: int = 34
-_MAX_WAVEFORM_TRACES: int = 40
 
 
 def _compute_kde(samples: np.ndarray, grid: np.ndarray, span: float) -> np.ndarray:
@@ -622,203 +610,8 @@ class DetectionCriterionRow(QWidget):
             self._pass_curve.setData([], [])
 
 
-class DetectionWaveformPanel(QWidget):
-    """Fixed-size Spike waveforms panel with spontaneous/evoked overlay (§ 13.5.4)."""
-
-    window_changed = pyqtSignal(float, float)
-
-    def __init__(self, parent: Optional[QWidget] = None) -> None:
-        super().__init__(parent)
-        self._window_ms: Tuple[float, float] = (-1.0, 2.0)
-
-        root = QVBoxLayout(self)
-        root.setContentsMargins(0, 0, 0, 0)
-        root.setSpacing(6)
-
-        # Header row: title + display-only window controls
-        header = QHBoxLayout()
-        header.setContentsMargins(0, 0, 0, 0)
-        header.setSpacing(6)
-
-        lbl_title = QLabel("Spike waveforms")
-        lbl_title.setStyleSheet(DETECTION_SUBPANEL_TITLE_STYLE)
-        header.addWidget(lbl_title)
-        header.addStretch()
-
-        lbl_win = QLabel("Window")
-        lbl_win.setStyleSheet(DETECTION_SUBPANEL_META_STYLE)
-        lbl_win.setToolTip("Display window only; does not change waveform correlation r.")
-        header.addWidget(lbl_win)
-
-        self.edit_wf_start = QLineEdit("-1.0")
-        self.edit_wf_start.setFixedWidth(44)
-        self.edit_wf_start.setAlignment(Qt.AlignmentFlag.AlignRight)
-        self.edit_wf_start.setStyleSheet(DETECTION_WINDOW_INPUT_STYLE)
-        self.edit_wf_start.setToolTip("Display window start (ms). Does not affect WF r.")
-        self.edit_wf_start.editingFinished.connect(self._on_window_edited)
-        header.addWidget(self.edit_wf_start)
-
-        lbl_to = QLabel("to")
-        lbl_to.setStyleSheet(DETECTION_SUBPANEL_META_STYLE)
-        header.addWidget(lbl_to)
-
-        self.edit_wf_end = QLineEdit("2.0")
-        self.edit_wf_end.setFixedWidth(44)
-        self.edit_wf_end.setAlignment(Qt.AlignmentFlag.AlignRight)
-        self.edit_wf_end.setStyleSheet(DETECTION_WINDOW_INPUT_STYLE)
-        self.edit_wf_end.setToolTip("Display window end (ms). Does not affect WF r.")
-        self.edit_wf_end.editingFinished.connect(self._on_window_edited)
-        header.addWidget(self.edit_wf_end)
-
-        lbl_ms = QLabel("ms")
-        lbl_ms.setStyleSheet(DETECTION_SUBPANEL_META_STYLE)
-        header.addWidget(lbl_ms)
-
-        root.addLayout(header)
-
-        # Body row: 240x134 plot + legend column to the right
-        body = QHBoxLayout()
-        body.setContentsMargins(0, 0, 0, 0)
-        body.setSpacing(10)
-
-        plot_w = DETECTION_WAVEFORM_PLOT_SIZE[0] + _WAVEFORM_LEFT_MARGIN
-        plot_h = DETECTION_WAVEFORM_PLOT_SIZE[1] + _WAVEFORM_BOTTOM_HEIGHT
-        self.plot_wf = pg.PlotWidget(self)
-        self.plot_wf.setFixedSize(plot_w, plot_h)
-        self.plot_wf.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
-        self.plot_wf.setMouseEnabled(x=False, y=False)
-        apply_plot_style(
-            self.plot_wf,
-            compact=True,
-            left_label="µV",
-            bottom_label="Time (ms)",
-            show_bottom_values=True,
-            left_margin=_WAVEFORM_LEFT_MARGIN,
-        )
-        self.plot_wf.getPlotItem().setXRange(self._window_ms[0], self._window_ms[1], padding=0.0)
-        body.addWidget(self.plot_wf)
-
-        legend_col = QVBoxLayout()
-        legend_col.setContentsMargins(0, 4, 0, 4)
-        legend_col.setSpacing(6)
-
-        lbl_spont = QLabel(DETECTION_WAVEFORM_SPONT_LEGEND_HTML)
-        lbl_spont.setStyleSheet(DETECTION_WAVEFORM_LEGEND_STYLE)
-        legend_col.addWidget(lbl_spont)
-
-        lbl_evoked = QLabel(DETECTION_WAVEFORM_EVOKED_LEGEND_HTML)
-        lbl_evoked.setStyleSheet(DETECTION_WAVEFORM_LEGEND_STYLE)
-        legend_col.addWidget(lbl_evoked)
-
-        lbl_note = QLabel("40 spikes each; bold = mean. Amplitude in µV.")
-        lbl_note.setWordWrap(True)
-        lbl_note.setFixedWidth(130)
-        lbl_note.setStyleSheet(DETECTION_WAVEFORM_NOTE_STYLE)
-        legend_col.addWidget(lbl_note)
-
-        self.lbl_r = QLabel("r = —")
-        self.lbl_r.setStyleSheet(DETECTION_WAVEFORM_R_STYLE)
-        legend_col.addWidget(self.lbl_r)
-        legend_col.addStretch()
-
-        body.addLayout(legend_col)
-        body.addStretch()
-        root.addLayout(body)
-
-        self._trace_items: List[pg.PlotDataItem] = []
-
-    def _on_window_edited(self) -> None:
-        try:
-            start = float(self.edit_wf_start.text().strip())
-            end = float(self.edit_wf_end.text().strip())
-        except ValueError:
-            self.edit_wf_start.setText(f"{self._window_ms[0]:.1f}")
-            self.edit_wf_end.setText(f"{self._window_ms[1]:.1f}")
-            return
-        if end <= start + 0.2:
-            self.edit_wf_start.setText(f"{self._window_ms[0]:.1f}")
-            self.edit_wf_end.setText(f"{self._window_ms[1]:.1f}")
-            return
-        self._window_ms = (start, end)
-        self.plot_wf.getPlotItem().setXRange(start, end, padding=0.0)
-        self.window_changed.emit(start, end)
-
-    def _clear_traces(self) -> None:
-        for item in self._trace_items:
-            self.plot_wf.removeItem(item)
-        self._trace_items.clear()
-
-    def set_waveforms(
-        self,
-        spont_snippets: Optional[np.ndarray],
-        evoked_snippets: Optional[np.ndarray],
-        time_ms: Optional[np.ndarray],
-        r_value: Optional[float],
-        window_ms: Optional[Tuple[float, float]] = None,
-    ) -> None:
-        """Render up to 40 faint spontaneous/evoked traces plus bold means."""
-        self._clear_traces()
-
-        if window_ms is not None and len(window_ms) == 2 and window_ms[1] > window_ms[0]:
-            self._window_ms = (float(window_ms[0]), float(window_ms[1]))
-            if not self.edit_wf_start.hasFocus():
-                self.edit_wf_start.setText(f"{self._window_ms[0]:.1f}")
-            if not self.edit_wf_end.hasFocus():
-                self.edit_wf_end.setText(f"{self._window_ms[1]:.1f}")
-
-        if r_value is not None and np.isfinite(r_value):
-            self.lbl_r.setText(f"r = {float(r_value):.2f}")
-        else:
-            self.lbl_r.setText("r = —")
-
-        if time_ms is None or len(time_ms) == 0:
-            self.plot_wf.getPlotItem().setXRange(self._window_ms[0], self._window_ms[1], padding=0.0)
-            return
-
-        t = np.asarray(time_ms, dtype=np.float64)
-        y_vals: List[np.ndarray] = []
-
-        for snippets, color_hex, z_base in (
-            (spont_snippets, COLOR_WAVEFORM_SPONT, 5),
-            (evoked_snippets, COLOR_WAVEFORM_EVOKED, 8),
-        ):
-            if snippets is None:
-                continue
-            arr = np.asarray(snippets, dtype=np.float64)
-            if arr.ndim == 1:
-                arr = arr[None, :]
-            if arr.ndim != 2 or arr.shape[0] == 0 or arr.shape[1] != len(t):
-                continue
-
-            n_show = min(arr.shape[0], _MAX_WAVEFORM_TRACES)
-            faint_pen = pg.mkPen(rgba_from_hex(color_hex, alpha=55), width=0.8)
-            for idx in range(n_show):
-                trace = pg.PlotDataItem(t, arr[idx], pen=faint_pen)
-                trace.setZValue(z_base)
-                self.plot_wf.addItem(trace)
-                self._trace_items.append(trace)
-
-            mean_wf = np.nanmean(arr, axis=0)
-            mean_pen = pg.mkPen(color_hex, width=2.2)
-            mean_item = pg.PlotDataItem(t, mean_wf, pen=mean_pen)
-            mean_item.setZValue(z_base + 10)
-            self.plot_wf.addItem(mean_item)
-            self._trace_items.append(mean_item)
-            y_vals.append(arr[:n_show])
-
-        p_item = self.plot_wf.getPlotItem()
-        p_item.setXRange(self._window_ms[0], self._window_ms[1], padding=0.0)
-        if y_vals:
-            stacked = np.concatenate([v.ravel() for v in y_vals])
-            finite = stacked[np.isfinite(stacked)]
-            if len(finite) > 0:
-                ymin, ymax = float(np.min(finite)), float(np.max(finite))
-                pad = max((ymax - ymin) * 0.1, 10.0)
-                p_item.setYRange(ymin - pad, ymax + pad, padding=0.0)
-
-
 class DetectionPairplotWidget(QWidget):
-    """2x2 lower-triangle pairplot for (latency, jitter, reliability) (§ 13.5.4)."""
+    """3x3 lower-triangle pairplot for (latency, jitter, reliability, log10 SALT p) (§ 13.5.4)."""
 
     unit_clicked = pyqtSignal(int)
 
@@ -871,19 +664,47 @@ class DetectionPairplotWidget(QWidget):
         # (1, 0): Reliability (0..1) vs Latency (0..20)
         self.plot_rel_lat = self._make_scatter_plot(
             width=cell_w + _PAIRPLOT_LEFT_MARGIN,
-            height=cell_h + _PAIRPLOT_BOTTOM_HEIGHT,
+            height=cell_h,
             left_label="Reliability",
-            bottom_label="Latency (ms)",
+            bottom_label=None,
             show_left=True,
-            show_bottom=True,
+            show_bottom=False,
             x_range=(0.0, 20.0),
             y_range=(0.0, 1.0),
         )
-        self.plot_jit_lat.setXLink(self.plot_rel_lat)
         grid.addWidget(self.plot_rel_lat, 1, 0)
 
         # (1, 1): Reliability (0..1) vs Jitter (0..6)
         self.plot_rel_jit = self._make_scatter_plot(
+            width=cell_w,
+            height=cell_h,
+            left_label=None,
+            bottom_label=None,
+            show_left=False,
+            show_bottom=False,
+            x_range=(0.0, 6.0),
+            y_range=(0.0, 1.0),
+        )
+        grid.addWidget(self.plot_rel_jit, 1, 1)
+
+        # (2, 0): SALT p (log10: -3..0) vs Latency (0..20)
+        self.plot_salt_lat = self._make_scatter_plot(
+            width=cell_w + _PAIRPLOT_LEFT_MARGIN,
+            height=cell_h + _PAIRPLOT_BOTTOM_HEIGHT,
+            left_label="SALT p",
+            bottom_label="Latency (ms)",
+            show_left=True,
+            show_bottom=True,
+            x_range=(0.0, 20.0),
+            y_range=(-3.0, 0.0),
+        )
+        salt_left_ax = self.plot_salt_lat.getPlotItem().getAxis("left")
+        if salt_left_ax is not None:
+            salt_left_ax.setTicks([[(-3.0, "0.001"), (-2.0, "0.01"), (-1.0, "0.1"), (0.0, "1")]])
+        grid.addWidget(self.plot_salt_lat, 2, 0)
+
+        # (2, 1): SALT p (log10: -3..0) vs Jitter (0..6)
+        self.plot_salt_jit = self._make_scatter_plot(
             width=cell_w,
             height=cell_h + _PAIRPLOT_BOTTOM_HEIGHT,
             left_label=None,
@@ -891,10 +712,30 @@ class DetectionPairplotWidget(QWidget):
             show_left=False,
             show_bottom=True,
             x_range=(0.0, 6.0),
-            y_range=(0.0, 1.0),
+            y_range=(-3.0, 0.0),
         )
+        grid.addWidget(self.plot_salt_jit, 2, 1)
+
+        # (2, 2): SALT p (log10: -3..0) vs Reliability (0..1)
+        self.plot_salt_rel = self._make_scatter_plot(
+            width=cell_w,
+            height=cell_h + _PAIRPLOT_BOTTOM_HEIGHT,
+            left_label=None,
+            bottom_label="Reliability",
+            show_left=False,
+            show_bottom=True,
+            x_range=(0.0, 1.0),
+            y_range=(-3.0, 0.0),
+        )
+        grid.addWidget(self.plot_salt_rel, 2, 2)
+
+        # Shared axis linking across columns and rows
+        self.plot_jit_lat.setXLink(self.plot_salt_lat)
+        self.plot_rel_lat.setXLink(self.plot_salt_lat)
+        self.plot_rel_jit.setXLink(self.plot_salt_jit)
         self.plot_rel_jit.setYLink(self.plot_rel_lat)
-        grid.addWidget(self.plot_rel_jit, 1, 1)
+        self.plot_salt_jit.setYLink(self.plot_salt_lat)
+        self.plot_salt_rel.setYLink(self.plot_salt_lat)
 
         root.addLayout(grid)
 
@@ -905,6 +746,9 @@ class DetectionPairplotWidget(QWidget):
             ("jit_lat", self.plot_jit_lat),
             ("rel_lat", self.plot_rel_lat),
             ("rel_jit", self.plot_rel_jit),
+            ("salt_lat", self.plot_salt_lat),
+            ("salt_jit", self.plot_salt_jit),
+            ("salt_rel", self.plot_salt_rel),
         ):
             self._cells[key] = self._init_cell_items(plot_w)
             install_figure_export_menu(
@@ -1053,6 +897,9 @@ class DetectionPairplotWidget(QWidget):
         jit_enabled: bool = True,
         rel_min: float = 0.60,
         rel_enabled: bool = True,
+        salt_p_values: Optional[Sequence[float]] = None,
+        salt_max: float = 0.05,
+        salt_enabled: bool = True,
     ) -> None:
         """Update pairplot scatters, threshold lines, passing regions, and focused ring."""
         uids = np.asarray(unit_ids, dtype=np.int64)
@@ -1060,6 +907,8 @@ class DetectionPairplotWidget(QWidget):
         jit = np.asarray(jitters, dtype=np.float64)
         rel = np.asarray(reliabilities, dtype=np.float64)
         tag = np.asarray(is_tagged, dtype=bool)
+        has_salt = salt_p_values is not None
+        salt = np.asarray(salt_p_values, dtype=np.float64) if has_salt else None
 
         valid = (
             np.isfinite(lat)
@@ -1068,6 +917,9 @@ class DetectionPairplotWidget(QWidget):
             & (jit < (MISSING_METRIC_SENTINEL - 1.0))
             & np.isfinite(rel)
         )
+        if salt is not None:
+            valid = valid & np.isfinite(salt)
+
         n_omitted = int(np.sum(~valid))
         tooltip = (
             f"{n_omitted} units without a light response omitted"
@@ -1078,19 +930,33 @@ class DetectionPairplotWidget(QWidget):
         self._lbl_legend.setToolTip(tooltip)
         self.lbl_title.setToolTip(tooltip)
 
-        self._unit_meta.clear()
-        for uid, la, ji, re_val, tg in zip(uids[valid], lat[valid], jit[valid], rel[valid], tag[valid]):
-            status = "Tagged" if tg else "Untagged"
-            self._unit_meta[int(uid)] = (
-                f"Unit u{int(uid):04d} ({status}) · "
-                f"Lat {la:.2f} ms · Jit {ji:.2f} ms · Rel {re_val:.2f}"
-            )
-
         v_uids = uids[valid]
         v_lat = lat[valid]
         v_jit = jit[valid]
         v_rel = rel[valid]
         v_tag = tag[valid]
+        v_salt = salt[valid] if salt is not None else None
+        v_salt_log = np.log10(np.clip(v_salt, 1e-3, 1.0)) if v_salt is not None else None
+
+        self._unit_meta.clear()
+        if v_salt is not None:
+            for uid, la, ji, re_val, sa_val, tg in zip(v_uids, v_lat, v_jit, v_rel, v_salt, v_tag):
+                status = "Tagged" if tg else "Untagged"
+                self._unit_meta[int(uid)] = (
+                    f"Unit u{int(uid):04d} ({status}) · "
+                    f"Lat {la:.2f} ms · Jit {ji:.2f} ms · Rel {re_val:.2f} · SALT p {sa_val:.4g}"
+                )
+        else:
+            for uid, la, ji, re_val, tg in zip(v_uids, v_lat, v_jit, v_rel, v_tag):
+                status = "Tagged" if tg else "Untagged"
+                self._unit_meta[int(uid)] = (
+                    f"Unit u{int(uid):04d} ({status}) · "
+                    f"Lat {la:.2f} ms · Jit {ji:.2f} ms · Rel {re_val:.2f}"
+                )
+
+        salt_thresh_log = (
+            float(np.log10(np.clip(salt_max, 1e-3, 1.0))) if salt_enabled else None
+        )
 
         self._update_cell(
             "jit_lat",
@@ -1133,6 +999,59 @@ class DetectionPairplotWidget(QWidget):
             x_le=True,
             y_thresh=rel_min if rel_enabled else None,
             y_le=False,
+        )
+
+        if v_salt_log is not None:
+            s_uids, s_lat, s_jit, s_rel, s_log, s_tag = v_uids, v_lat, v_jit, v_rel, v_salt_log, v_tag
+        else:
+            s_uids = np.empty(0, dtype=np.int64)
+            s_lat = np.empty(0, dtype=np.float64)
+            s_jit = np.empty(0, dtype=np.float64)
+            s_rel = np.empty(0, dtype=np.float64)
+            s_log = np.empty(0, dtype=np.float64)
+            s_tag = np.empty(0, dtype=bool)
+
+        self._update_cell(
+            "salt_lat",
+            s_uids,
+            s_lat,
+            s_log,
+            s_tag,
+            focused_unit_id,
+            x_bounds=(0.0, 20.0),
+            y_bounds=(-3.0, 0.0),
+            x_thresh=lat_max if lat_enabled else None,
+            x_le=True,
+            y_thresh=salt_thresh_log,
+            y_le=True,
+        )
+        self._update_cell(
+            "salt_jit",
+            s_uids,
+            s_jit,
+            s_log,
+            s_tag,
+            focused_unit_id,
+            x_bounds=(0.0, 6.0),
+            y_bounds=(-3.0, 0.0),
+            x_thresh=jit_max if jit_enabled else None,
+            x_le=True,
+            y_thresh=salt_thresh_log,
+            y_le=True,
+        )
+        self._update_cell(
+            "salt_rel",
+            s_uids,
+            s_rel,
+            s_log,
+            s_tag,
+            focused_unit_id,
+            x_bounds=(0.0, 1.0),
+            y_bounds=(-3.0, 0.0),
+            x_thresh=rel_min if rel_enabled else None,
+            x_le=False,
+            y_thresh=salt_thresh_log,
+            y_le=True,
         )
 
     def _update_cell(

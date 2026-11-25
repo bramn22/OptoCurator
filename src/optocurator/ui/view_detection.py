@@ -44,10 +44,6 @@ from optocurator.analysis.metrics import (
     compute_session_metrics,
 )
 from optocurator.analysis.precompute import batch_precompute_plots
-from optocurator.analysis.waveform import (
-    extract_evoked_and_spontaneous_snippets,
-    extract_session_waveforms,
-)
 from optocurator.io.nwb import (
     NwbSpikeReader,
     NwbStimulusReader,
@@ -68,7 +64,6 @@ from optocurator.models import (
 from optocurator.ui.detection_widgets import (
     DetectionCriterionRow,
     DetectionPairplotWidget,
-    DetectionWaveformPanel,
     install_combo_chevron,
 )
 from optocurator.ui.figure_export import install_figure_export_menu
@@ -130,16 +125,14 @@ _COL_LAT = 1
 _COL_JIT = 2
 _COL_REL = 3
 _COL_SALT = 4
-_COL_WF = 5
-_COL_LIK = 6
-_COL_STATUS = 7
+_COL_LIK = 5
+_COL_STATUS = 6
 
 _DEFAULT_CRITERIA: Dict[str, Tuple[bool, float]] = {
     "latency": (True, 8.0),
     "jitter": (True, 2.0),
     "rel": (True, 0.60),
     "salt": (True, 0.05),
-    "wf": (True, 0.90),
 }
 
 _LIKELY_THRESHOLD = 0.30
@@ -453,17 +446,16 @@ class DetectionView(QWidget):
 
         layout.addLayout(filter_row)
 
-        # 8-column units table
+        # 7-column units table
         self.table_units = QTableWidget(col)
-        self.table_units.setColumnCount(8)
-        headers = ["Unit", "Lat.", "Jit.", "Rel.", "SALT p", "WF r", "Likelihood", "Status"]
+        self.table_units.setColumnCount(7)
+        headers = ["Unit", "Lat.", "Jit.", "Rel.", "SALT p", "Likelihood", "Status"]
         header_tooltips = [
             "Unit ID",
             "Latency (ms)",
             "Jitter (ms)",
             "Reliability",
             "SALT p-value",
-            "Waveform correlation (r)",
             "Likelihood of being tagged",
             "Tagging status",
         ]
@@ -481,7 +473,7 @@ class DetectionView(QWidget):
         h_header.setMinimumSectionSize(30)
         h_header.setSectionResizeMode(QHeaderView.ResizeMode.Fixed)
         h_header.setStretchLastSection(True)
-        col_widths = {0: 54, 1: 39, 2: 37, 3: 40, 4: 49, 5: 37, 6: 59, 7: 40}
+        col_widths = {0: 56, 1: 42, 2: 40, 3: 44, 4: 54, 5: 66, 6: 44}
         for col_idx, width in col_widths.items():
             self.table_units.setColumnWidth(col_idx, width)
         self.table_units.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
@@ -536,7 +528,7 @@ class DetectionView(QWidget):
         return col
 
     def _build_center_column(self) -> QWidget:
-        """Build Centre Column: Focused Unit header, display controls, Raster+PSTH, Waveforms, Pairplot (§ 13.5)."""
+        """Build Centre Column: Focused Unit header, display controls, Raster+PSTH, and Pairplot (§ 13.5)."""
         col = QWidget(self)
         col.setObjectName("detectionColumnPanel")
         col.setStyleSheet(DETECTION_COLUMN_PANEL_STYLE)
@@ -634,7 +626,7 @@ class DetectionView(QWidget):
         ctrl_row.addStretch()
         layout.addLayout(ctrl_row)
 
-        # Plot area: two side-by-side columns (left: Raster + PSTH, right: Waveforms + Pairplot)
+        # Plot area: vertically stacked (top: Raster + PSTH, bottom: 3x3 Pairplot)
         # Plot area inside a scroll guard so fixed plots never clip each other at 1366x768
         plot_scroll = QScrollArea(col)
         plot_scroll.setWidgetResizable(True)
@@ -642,8 +634,8 @@ class DetectionView(QWidget):
         plot_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         plot_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         plot_container = QWidget(plot_scroll)
-        plot_area = QHBoxLayout(plot_container)
-        plot_area.setContentsMargins(0, 4, 8, 0)
+        plot_area = QVBoxLayout(plot_container)
+        plot_area.setContentsMargins(0, 4, 8, 8)
         plot_area.setSpacing(14)
 
         pg.setConfigOption("background", COLOR_PANEL)
@@ -671,6 +663,7 @@ class DetectionView(QWidget):
         self.raster_plot.setXRange(self.current_window_ms[0], self.current_window_ms[1], padding=0.0)
         self.raster_plot.getViewBox().disableAutoRange(pg.ViewBox.XAxis)
 
+        self.plot_canvas.ci.layout.setContentsMargins(0, 0, 6, 0)
         self.plot_canvas.ci.layout.setSpacing(4)
         self.plot_canvas.ci.layout.setRowStretchFactor(0, DETECTION_RASTER_SIZE[1])
         self.plot_canvas.ci.layout.setRowStretchFactor(1, DETECTION_PSTH_SIZE[1])
@@ -689,19 +682,7 @@ class DetectionView(QWidget):
             label="Save Raster + PSTH as SVG…",
         )
 
-        left_plot_col = QVBoxLayout()
-        left_plot_col.setContentsMargins(0, 0, 0, 0)
-        left_plot_col.addWidget(self.plot_canvas)
-        left_plot_col.addStretch()
-        plot_area.addLayout(left_plot_col)
-
-        right_plot_col = QVBoxLayout()
-        right_plot_col.setContentsMargins(0, 0, 0, 0)
-        right_plot_col.setSpacing(12)
-
-        self.waveform_panel = DetectionWaveformPanel(col)
-        self.waveform_panel.setVisible(False)
-        right_plot_col.addWidget(self.waveform_panel)
+        plot_area.addWidget(self.plot_canvas, alignment=Qt.AlignmentFlag.AlignLeft)
 
         self.pairplot_widget = DetectionPairplotWidget(col)
         self.pairplot_widget.export_name_provider = lambda: (
@@ -710,10 +691,7 @@ class DetectionView(QWidget):
             else "tagging_pairplot"
         )
         self.pairplot_widget.unit_clicked.connect(self._focus_unit_by_id)
-        right_plot_col.addWidget(self.pairplot_widget)
-        right_plot_col.addStretch()
-
-        plot_area.addLayout(right_plot_col)
+        plot_area.addWidget(self.pairplot_widget, alignment=Qt.AlignmentFlag.AlignLeft)
         plot_area.addStretch()
 
         plot_scroll.setWidget(plot_container)
@@ -721,7 +699,7 @@ class DetectionView(QWidget):
         return col
 
     def _build_right_column(self) -> QWidget:
-        """Build Right Column: Tagging criteria, 5 DetectionCriterionRows, summary box, Save button (§ 13.6)."""
+        """Build Right Column: Tagging criteria, 4 DetectionCriterionRows, summary box, Save button (§ 13.6)."""
         col = QWidget(self)
         col.setObjectName("detectionColumnPanel")
         col.setStyleSheet(DETECTION_COLUMN_PANEL_STYLE)
@@ -752,7 +730,7 @@ class DetectionView(QWidget):
         self.btn_criteria_reset = QPushButton("Reset to defaults", col)
         self.btn_criteria_reset.setStyleSheet(DETECTION_SUBTLE_BTN_STYLE)
         self.btn_criteria_reset.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_criteria_reset.setToolTip("Reset all 5 tagging criteria to default values")
+        self.btn_criteria_reset.setToolTip("Reset all 4 tagging criteria to default values")
         self.btn_criteria_reset.clicked.connect(self.reset_criteria_to_defaults)
         hdr_row.addWidget(self.btn_criteria_reset)
 
@@ -767,7 +745,7 @@ class DetectionView(QWidget):
         # Align top of first criterion row with top edge of raster plot_canvas
         layout.addSpacing(16)
 
-        # Five DetectionCriterionRow widgets
+        # Four DetectionCriterionRow widgets
         self.row_latency = DetectionCriterionRow(
             "Max. latency",
             operator="≤",
@@ -817,28 +795,12 @@ class DetectionView(QWidget):
             is_log=True,
             parent=col,
         )
-        self.row_wf = DetectionCriterionRow(
-            "Min. waveform r",
-            operator="≥",
-            unit="",
-            axis_range=(0.4, 1.0),
-            ticks=[0.4, 0.6, 0.8, 1],
-            default_threshold=0.90,
-            min_val=0.0,
-            max_val=1.0,
-            decimals=2,
-            parent=col,
-        )
-        self.row_wf.setToolTip(
-            "Units without extractable waveforms are not tested on waveform correlation."
-        )
 
         self._criterion_rows: Dict[str, DetectionCriterionRow] = {
             "latency": self.row_latency,
             "jitter": self.row_jitter,
             "rel": self.row_rel,
             "salt": self.row_salt,
-            "wf": self.row_wf,
         }
 
         self.criteria_container = QWidget(col)
@@ -893,10 +855,6 @@ class DetectionView(QWidget):
         self.chk_salt = self.row_salt.chk_enabled
         self.edit_salt = _attach_criterion_compat(self.row_salt)
         self.spin_salt = self.edit_salt
-
-        self.chk_wf = self.row_wf.chk_enabled
-        self.edit_wf = _attach_criterion_compat(self.row_wf)
-        self.spin_wf = self.edit_wf
 
         self.chk_wv = self.chk_salt
         self.spin_wv = self.spin_salt
@@ -1213,7 +1171,6 @@ class DetectionView(QWidget):
             self._criteria_undo_stack.clear()
             self.btn_criteria_undo.setEnabled(False)
             self._focused_unit_id = None
-            self._disk_waveform_unit_ids = set()
             self.lbl_session.setText(f"Session: {self.session_id}")
             self.lbl_session.setToolTip(str(nwb_path))
 
@@ -1354,18 +1311,6 @@ class DetectionView(QWidget):
             self.combo_proto.blockSignals(False)
             self._apply_protocol_default_stats_params(reset_customized=True)
 
-            pre_none_ids = {u.unit_id for u in self.units if u.waveforms is None}
-            if self.current_protocol is not None:
-                extract_session_waveforms(
-                    Path(folder_path),
-                    self.units,
-                    self.current_protocol.onsets,
-                    self.stats_params,
-                )
-            self._disk_waveform_unit_ids = {
-                u.unit_id for u in self.units if u.unit_id in pre_none_ids and u.waveforms is not None
-            }
-
             progress.setValue(45)
             progress.setLabelText("Computing first-spike latency, jitter & reliability metrics...")
             QApplication.processEvents()
@@ -1425,7 +1370,6 @@ class DetectionView(QWidget):
         self.table_units.setRowCount(0)
         self.raster_plot.clear()
         self.psth_plot.clear()
-        self.waveform_panel.setVisible(False)
         self.pairplot_widget.set_data([], [], [], [], [])
         self.probe_widget.sites_scatter.setData(x=[], y=[])
         self.probe_widget.units_scatter.setData(x=[], y=[])
@@ -1471,7 +1415,6 @@ class DetectionView(QWidget):
                     progress.setLabelText(f"Calculating parallel SALT tests ({done}/{total} units)...")
                     QApplication.processEvents()
 
-                self._reextract_disk_waveforms()
                 self._recompute_session_metrics(progress_callback=on_salt_progress)
                 progress.setValue(90)
                 progress.setLabelText("Updating units table...")
@@ -1480,23 +1423,6 @@ class DetectionView(QWidget):
                 self.protocols_changed.emit()
             finally:
                 progress.close()
-
-    def _reextract_disk_waveforms(self) -> None:
-        """Re-extract raw binary waveforms for disk-backed units after protocol/stats updates."""
-        disk_ids = getattr(self, "_disk_waveform_unit_ids", None)
-        if not disk_ids or self.current_folder is None or self.current_protocol is None:
-            return
-        targets = [u for u in self.units if u.unit_id in disk_ids]
-        if not targets:
-            return
-        for u in targets:
-            u.waveforms = None
-        extract_session_waveforms(
-            Path(self.current_folder),
-            targets,
-            self.current_protocol.onsets,
-            self.stats_params,
-        )
 
     def _default_stats_params_for_protocol(self, pulse_dur_ms: float) -> StatsParameters:
         """Return default StatsParameters with post-pulse windows spanning [0, pulse_dur_ms]."""
@@ -1512,8 +1438,6 @@ class DetectionView(QWidget):
             jitter_window_end_ms=end_ms,
             salt_window_start_ms=0.0,
             salt_window_end_ms=end_ms,
-            wf_evoked_start_ms=0.0,
-            wf_evoked_end_ms=end_ms,
         )
 
     def default_stats_parameters(self) -> StatsParameters:
@@ -1551,7 +1475,6 @@ class DetectionView(QWidget):
                     progress.setLabelText(f"Calculating parallel SALT tests ({done}/{total} units)...")
                     QApplication.processEvents()
 
-                self._reextract_disk_waveforms()
                 self._recompute_session_metrics(progress_callback=on_salt_progress)
                 progress.setValue(90)
                 progress.setLabelText("Updating units table...")
@@ -1564,7 +1487,7 @@ class DetectionView(QWidget):
                 progress.close()
 
     def _build_likelihood_criteria(self) -> List[CriterionSpec]:
-        """Build CriterionSpec list from the 5 live tagging criterion rows."""
+        """Build CriterionSpec list from the 4 live tagging criterion rows."""
         return [
             CriterionSpec(
                 name="latency_ms",
@@ -1590,12 +1513,6 @@ class DetectionView(QWidget):
                 direction="le",
                 enabled=self.row_salt.is_enabled(),
                 is_log=True,
-            ),
-            CriterionSpec(
-                name="waveform_correlation",
-                threshold=self.row_wf.threshold(),
-                direction="ge",
-                enabled=self.row_wf.is_enabled(),
             ),
         ]
 
@@ -1661,22 +1578,10 @@ class DetectionView(QWidget):
         passes_salt = (not self.row_salt.is_enabled()) or (
             np.isfinite(m.salt_p_value) and m.salt_p_value <= self.row_salt.threshold()
         )
-
-        # Units without extractable waveforms are not tested on WF r (WP11)
-        has_wf = (
-            u is not None
-            and u.waveforms is not None
-            and np.isfinite(m.waveform_correlation)
-        )
-        passes_wf = (
-            (not self.row_wf.is_enabled())
-            or (not has_wf)
-            or (m.waveform_correlation >= self.row_wf.threshold())
-        )
-        return bool(passes_lat and passes_jit and passes_rel and passes_salt and passes_wf)
+        return bool(passes_lat and passes_jit and passes_rel and passes_salt)
 
     def _populate_table(self) -> None:
-        """Fill 8-column QTableWidget with computed unit metrics."""
+        """Fill 7-column QTableWidget with computed unit metrics."""
         self.table_units.setSortingEnabled(False)
         self.table_units.blockSignals(True)
         self.table_units.setRowCount(len(self.units))
@@ -1685,13 +1590,11 @@ class DetectionView(QWidget):
         use_jit = self.row_jitter.is_enabled()
         use_rel = self.row_rel.is_enabled()
         use_salt = self.row_salt.is_enabled()
-        use_wf = self.row_wf.is_enabled()
 
         max_lat = self.row_latency.threshold()
         max_jit = self.row_jitter.threshold()
         min_rel = self.row_rel.threshold()
         max_salt = self.row_salt.threshold()
-        min_wf = self.row_wf.threshold()
 
         danger_brush = QBrush(QColor(COLOR_DANGER))
         default_brush = QBrush(QColor(COLOR_TEXT))
@@ -1716,14 +1619,6 @@ class DetectionView(QWidget):
 
             salt_val = m.salt_p_value if (m and np.isfinite(m.salt_p_value)) else 1.0
             salt_str = "≤ 0.01" if salt_val <= 0.01 else f"{salt_val:.3f}"
-
-            wf_avail = (
-                unit.waveforms is not None
-                and m is not None
-                and np.isfinite(m.waveform_correlation)
-            )
-            wf_val = float(m.waveform_correlation) if wf_avail and m is not None else -float("inf")
-            wf_str = f"{wf_val:.2f}" if wf_avail else "—"
 
             lik_val = float(getattr(m, "likelihood", 0.0)) if m else 0.0
             if not np.isfinite(lik_val):
@@ -1772,15 +1667,6 @@ class DetectionView(QWidget):
             it_salt.setToolTip(f"p = {salt_val:.5g}")
             it_salt.setForeground(danger_brush if (use_salt and salt_val > max_salt) else default_brush)
 
-            it_wf = NumericTableWidgetItem(wf_str, sort_key=wf_val)
-            it_wf.setTextAlignment(int(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter))
-            if not wf_avail:
-                it_wf.setForeground(muted_brush)
-            elif use_wf and wf_val < min_wf:
-                it_wf.setForeground(danger_brush)
-            else:
-                it_wf.setForeground(default_brush)
-
             it_lik = NumericTableWidgetItem(lik_str, sort_key=lik_val)
             it_lik.setTextAlignment(int(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter))
             it_lik.setData(Qt.ItemDataRole.UserRole, lik_val)
@@ -1797,7 +1683,6 @@ class DetectionView(QWidget):
             self.table_units.setItem(row, _COL_JIT, it_jit)
             self.table_units.setItem(row, _COL_REL, it_rel)
             self.table_units.setItem(row, _COL_SALT, it_salt)
-            self.table_units.setItem(row, _COL_WF, it_wf)
             self.table_units.setItem(row, _COL_LIK, it_lik)
             self.table_units.setItem(row, _COL_STATUS, it_status)
 
@@ -1877,13 +1762,11 @@ class DetectionView(QWidget):
         use_jit = self.row_jitter.is_enabled()
         use_rel = self.row_rel.is_enabled()
         use_salt = self.row_salt.is_enabled()
-        use_wf = self.row_wf.is_enabled()
 
         max_lat = self.row_latency.threshold()
         max_jit = self.row_jitter.threshold()
         min_rel = self.row_rel.threshold()
         max_salt_p = self.row_salt.threshold()
-        min_wf = self.row_wf.threshold()
 
         danger_brush = QBrush(QColor(COLOR_DANGER))
         default_brush = QBrush(QColor(COLOR_TEXT))
@@ -1905,7 +1788,6 @@ class DetectionView(QWidget):
         for row in range(self.table_units.rowCount()):
             int_uid = self._row_unit_id(row)
             m = self.metrics.get(int_uid)
-            u = self.units_by_id.get(int_uid)
 
             if m is not None:
                 if int_uid in self.manual_overrides:
@@ -1918,8 +1800,6 @@ class DetectionView(QWidget):
                 jit_val = m.jitter_ms if np.isfinite(m.jitter_ms) else float("inf")
                 rel_val = m.reliability if np.isfinite(m.reliability) else 0.0
                 salt_val = m.salt_p_value if np.isfinite(m.salt_p_value) else 1.0
-                wf_avail = u is not None and u.waveforms is not None and np.isfinite(m.waveform_correlation)
-                wf_val = float(m.waveform_correlation) if wf_avail else float("nan")
             else:
                 it_lat_txt = self.table_units.item(row, _COL_LAT).text()
                 lat_val = float(it_lat_txt) if it_lat_txt not in ("N/A", "—") else MISSING_METRIC_SENTINEL
@@ -1928,8 +1808,6 @@ class DetectionView(QWidget):
                 rel_val = float(self.table_units.item(row, _COL_REL).text())
                 salt_item = self.table_units.item(row, _COL_SALT)
                 salt_val = salt_item.sort_key if isinstance(salt_item, NumericTableWidgetItem) else 1.0
-                wf_avail = False
-                wf_val = float("nan")
                 if int_uid in self.manual_overrides:
                     is_tagged = self.manual_overrides[int_uid]
                 else:
@@ -1954,12 +1832,6 @@ class DetectionView(QWidget):
             self.table_units.item(row, _COL_SALT).setForeground(
                 danger_brush if (use_salt and salt_val > max_salt_p) else default_brush
             )
-            if wf_avail:
-                self.table_units.item(row, _COL_WF).setForeground(
-                    danger_brush if (use_wf and wf_val < min_wf) else default_brush
-                )
-            else:
-                self.table_units.item(row, _COL_WF).setForeground(muted_brush)
 
             if m is not None:
                 lik_val = float(getattr(m, "likelihood", 0.0))
@@ -2219,19 +2091,11 @@ class DetectionView(QWidget):
         ]
         rel_vals = [self.metrics[uid].reliability for uid in uids if uid in self.metrics]
         salt_vals = [self.metrics[uid].salt_p_value for uid in uids if uid in self.metrics]
-        wf_vals = [
-            self.metrics[uid].waveform_correlation
-            for uid in uids
-            if uid in self.metrics
-            and self.units_by_id[uid].waveforms is not None
-            and np.isfinite(self.metrics[uid].waveform_correlation)
-        ]
 
         lat_t = self.row_latency.threshold()
         jit_t = self.row_jitter.threshold()
         rel_t = self.row_rel.threshold()
         salt_t = self.row_salt.threshold()
-        wf_t = self.row_wf.threshold()
 
         lat_focused = (
             focused_m.latency_ms
@@ -2279,18 +2143,6 @@ class DetectionView(QWidget):
         if focused_m is not None and np.isfinite(focused_m.salt_p_value):
             salt_val_f = float(focused_m.salt_p_value)
             self.row_salt.lbl_focused_value.setText("≤ 0.01" if salt_val_f <= 0.01 else f"{salt_val_f:.3f}")
-        self.row_wf.set_population_data(
-            wf_vals,
-            threshold=wf_t,
-            enabled=self.row_wf.is_enabled(),
-            focused_value=(
-                focused_m.waveform_correlation
-                if (focused_m and focused_u and focused_u.waveforms is not None and np.isfinite(focused_m.waveform_correlation))
-                else None
-            ),
-            n_pass=sum(1 for v in wf_vals if np.isfinite(v) and v >= wf_t),
-            n_total=len(wf_vals),
-        )
 
     def _update_summary_box(self) -> None:
         total = self.table_units.rowCount()
@@ -2311,6 +2163,7 @@ class DetectionView(QWidget):
         lats: List[float] = []
         jits: List[float] = []
         rels: List[float] = []
+        salts: List[float] = []
         tags: List[bool] = []
         for u in self.units:
             m = self.metrics.get(u.unit_id)
@@ -2320,6 +2173,7 @@ class DetectionView(QWidget):
             lats.append(m.latency_ms if is_valid_metric_value(m.latency_ms) else float("nan"))
             jits.append(m.jitter_ms if is_valid_metric_value(m.jitter_ms) else float("nan"))
             rels.append(m.reliability)
+            salts.append(m.salt_p_value)
             tags.append(bool(m.is_tagged))
 
         self.pairplot_widget.set_data(
@@ -2335,6 +2189,9 @@ class DetectionView(QWidget):
             jit_enabled=self.row_jitter.is_enabled(),
             rel_min=self.row_rel.threshold(),
             rel_enabled=self.row_rel.is_enabled(),
+            salt_p_values=salts,
+            salt_max=self.row_salt.threshold(),
+            salt_enabled=self.row_salt.is_enabled(),
         )
 
     def _update_probe_widget(self) -> None:
@@ -2575,7 +2432,7 @@ class DetectionView(QWidget):
             self.set_raster_marker_size(spin_marker.value())
 
     def _on_unit_selected(self) -> None:
-        """Render spike raster, PSTH, waveform panel, pairplot, and probe when a unit is focused."""
+        """Render spike raster, PSTH, pairplot, and probe when a unit is focused."""
         selected_rows = self.table_units.selectionModel().selectedRows()
         if not selected_rows:
             return
@@ -2649,74 +2506,7 @@ class DetectionView(QWidget):
                 x_label="Time from pulse onset (ms)",
                 y_label="Rate (Hz)",
             )
-
-            # Waveform panel visibility (§ 13.5.4 & § 13.9)
-            if unit is not None and unit.waveforms is not None and self.current_protocol is not None:
-                m = self.metrics.get(int_uid)
-                r_val = m.waveform_correlation if (m and np.isfinite(m.waveform_correlation)) else None
-                snippets = extract_evoked_and_spontaneous_snippets(
-                    unit.waveforms,
-                    unit.spike_times,
-                    self.current_protocol.onsets,
-                    evoked_window_ms=(
-                        self.stats_params.wf_evoked_start_ms,
-                        self.stats_params.wf_evoked_end_ms,
-                    ),
-                    baseline_window_ms=(
-                        self.stats_params.wf_baseline_start_ms,
-                        self.stats_params.wf_baseline_end_ms,
-                    ),
-                    max_spikes_per_group=self.stats_params.wf_max_spikes,
-                )
-                if snippets is not None:
-                    evoked_snips, spont_snips = snippets
-                    time_ms = np.linspace(
-                        self.stats_params.wf_window_start_ms,
-                        self.stats_params.wf_window_end_ms,
-                        evoked_snips.shape[-1],
-                    )
-                    self.waveform_panel.set_waveforms(
-                        spont_snippets=spont_snips,
-                        evoked_snippets=evoked_snips,
-                        time_ms=time_ms,
-                        r_value=r_val,
-                        window_ms=(
-                            self.stats_params.wf_window_start_ms,
-                            self.stats_params.wf_window_end_ms,
-                        ),
-                    )
-                    self.waveform_panel.setVisible(True)
-                else:
-                    wf_arr = np.asarray(unit.waveforms, dtype=np.float64)
-                    if wf_arr.ndim == 2 and wf_arr.shape[0] > 0 and wf_arr.shape[-1] > 0:
-                        wf_arr = wf_arr[np.all(np.isfinite(wf_arr), axis=1)]
-                    if (
-                        wf_arr.ndim == 2
-                        and wf_arr.shape[0] > 0
-                        and wf_arr.shape[-1] > 0
-                    ):
-                        time_ms = np.linspace(
-                            self.stats_params.wf_window_start_ms,
-                            self.stats_params.wf_window_end_ms,
-                            wf_arr.shape[-1],
-                        )
-                        self.waveform_panel.set_waveforms(
-                            spont_snippets=wf_arr,
-                            evoked_snippets=None,
-                            time_ms=time_ms,
-                            r_value=r_val,
-                            window_ms=(
-                                self.stats_params.wf_window_start_ms,
-                                self.stats_params.wf_window_end_ms,
-                            ),
-                        )
-                        self.waveform_panel.setVisible(True)
-                    else:
-                        self.waveform_panel.setVisible(False)
-            else:
-                self.waveform_panel.setVisible(False)
         else:
-            self.waveform_panel.setVisible(False)
             self.raster_plot.clear()
             self.psth_plot.clear()
             self.raster_plot.setXRange(self.current_window_ms[0], self.current_window_ms[1], padding=0.0)
@@ -2803,7 +2593,6 @@ class DetectionView(QWidget):
                     "latency_ms": round(m.latency_ms, 3) if is_valid_metric_value(m.latency_ms) else np.nan,
                     "jitter_ms": round(m.jitter_ms, 3) if is_valid_metric_value(m.jitter_ms) else np.nan,
                     "reliability": round(m.reliability, 4),
-                    "waveform_correlation": round(m.waveform_correlation, 4),
                     "salt_p_value": round(m.salt_p_value, 5),
                     "is_tagged": m.is_tagged,
                     "cluster_id": m.cluster_id,
@@ -2886,7 +2675,7 @@ class DetectionView(QWidget):
         return csv_path
 
     def _load_mock_data(self) -> None:
-        """Populate initial mock units with realistic spikes, waveforms, metrics, and likelihoods."""
+        """Populate initial mock units with realistic spikes, metrics, and likelihoods."""
         if self.session_id == "None":
             self.session_id = "demo_mouseA_20261021"
             self.lbl_session.setText(f"Session: {self.session_id}")
@@ -2908,24 +2697,17 @@ class DetectionView(QWidget):
         self.combo_proto.blockSignals(False)
         self.protocols_changed.emit()
 
-        # Realistic biphasic AP template (48 samples covering [-1.0, 2.0] ms)
-        t_wf = np.linspace(-1.0, 2.0, 48)
-        ap_template = (
-            -90.0 * np.exp(-((t_wf - 0.0) / 0.22) ** 2)
-            + 32.0 * np.exp(-((t_wf - 0.45) / 0.35) ** 2)
-        )
-
-        # (unit_id, lat_s, jit_s, rel, has_wf, ch, depth, probe_x, wf_noise_evoked)
+        # (unit_id, lat_s, jit_s, rel, ch, depth, probe_x)
         mock_specs = [
-            (1, 0.0042, 0.0008, 0.85, True, 2, 120.0, 16.0, 6.0),
-            (2, 0.0068, 0.0012, 0.72, True, 4, 160.0, 32.0, 8.0),
-            (3, 0.0145, 0.0030, 0.25, True, 6, 200.0, 16.0, 28.0),
-            (4, 0.0051, 0.0010, 0.68, True, 8, 240.0, 32.0, 7.0),
-            (5, 0.0175, 0.0020, 0.20, False, 10, 280.0, 16.0, 10.0),
+            (1, 0.0042, 0.0008, 0.85, 2, 120.0, 16.0),
+            (2, 0.0068, 0.0012, 0.72, 4, 160.0, 32.0),
+            (3, 0.0145, 0.0030, 0.25, 6, 200.0, 16.0),
+            (4, 0.0051, 0.0010, 0.68, 8, 240.0, 32.0),
+            (5, 0.0175, 0.0020, 0.20, 10, 280.0, 16.0),
         ]
 
         units: List[UnitData] = []
-        for uid, lat_s, jit_s, rel, has_wf, ch, depth, probe_x, ev_noise in mock_specs:
+        for uid, lat_s, jit_s, rel, ch, depth, probe_x in mock_specs:
             spikes: List[float] = []
             n_evoked_target = max(2, int(round(rel * len(onsets))))
             evoked_pulses = sorted(
@@ -2945,20 +2727,6 @@ class DetectionView(QWidget):
                     spikes.append(float(t_p + ev_lat_map[idx_p]))
 
             spike_times = np.sort(np.asarray(spikes, dtype=np.float64))
-            if has_wf:
-                n_spk = len(spike_times)
-                wfs = np.tile(ap_template, (n_spk, 1)) + rng.normal(0.0, 6.0, size=(n_spk, 48))
-                if uid == 3:
-                    ev_mask = np.zeros(n_spk, dtype=bool)
-                    for t_p in onsets:
-                        ev_mask |= (spike_times >= t_p) & (spike_times <= t_p + 0.020)
-                    wfs[ev_mask] = 0.4 * ap_template + rng.normal(
-                        0.0, ev_noise, size=(int(np.sum(ev_mask)), 48)
-                    )
-                wfs = wfs.astype(np.float32)
-            else:
-                wfs = None
-
             units.append(
                 UnitData(
                     session_id=self.session_id,
@@ -2968,7 +2736,6 @@ class DetectionView(QWidget):
                     channel=ch,
                     depth=depth,
                     probe_x=probe_x,
-                    waveforms=wfs,
                 )
             )
 

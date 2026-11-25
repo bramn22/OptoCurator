@@ -77,9 +77,9 @@ def test_detection_view_end_to_end_synthetic(qapp, tmp_path: Path):
     assert "OPTS_03" in view.combo_proto.currentText()
 
     # Unit 0 (lat ~ 4ms) should be Tagged
-    assert view.table_units.item(0, 7).text() == "✓"
+    assert view.table_units.item(0, 6).text() == "✓"
     # Unit 2 (lat ~ 18ms) should be Untagged
-    assert view.table_units.item(2, 7).text() == "○"
+    assert view.table_units.item(2, 6).text() == "○"
 
     # Select Unit 0 and verify unified combined raster and PSTH render
     view.table_units.selectRow(0)
@@ -102,30 +102,30 @@ def test_detection_view_end_to_end_synthetic(qapp, tmp_path: Path):
     # Set max latency to 3.0ms -> Unit 0 (lat=4.0ms) should become Untagged
     view.spin_latency.setValue(3.0)
     view._apply_thresholds()
-    assert view.table_units.item(0, 7).text() == "○"
+    assert view.table_units.item(0, 6).text() == "○"
 
     # Relax max latency to 8.0ms -> Unit 0 should become Tagged again
     view.spin_latency.setValue(8.0)
     view._apply_thresholds()
-    assert view.table_units.item(0, 7).text() == "✓"
+    assert view.table_units.item(0, 6).text() == "✓"
 
     # Test SALT p-value threshold adjustment:
     assert view.spin_salt.value() == 0.050
     # Restrict max SALT p-value cutoff -> Unit 0 (p ~ 0.0002) becomes Untagged if cutoff < p
     view.spin_salt.setValue(0.00001)
     view._apply_thresholds()
-    assert view.table_units.item(0, 7).text() == "○"
+    assert view.table_units.item(0, 6).text() == "○"
 
     # Relax max SALT p-value cutoff back to 0.050 -> Unit 0 becomes Tagged again
     view.spin_salt.setValue(0.050)
     view._apply_thresholds()
-    assert view.table_units.item(0, 7).text() == "✓"
+    assert view.table_units.item(0, 6).text() == "✓"
 
     # Test manual override toggle
     view.table_units.selectRow(2)  # Unit 2 is Untagged
-    assert view.table_units.item(2, 7).text() == "○"
+    assert view.table_units.item(2, 6).text() == "○"
     view._toggle_selected_unit_tag()
-    assert view.table_units.item(2, 7).text() == "✓ M"
+    assert view.table_units.item(2, 6).text() == "✓ M"
 
     # Export session to CSV
     export_dir = tmp_path / "exports"
@@ -144,7 +144,6 @@ def test_detection_view_end_to_end_synthetic(qapp, tmp_path: Path):
         "latency_ms",
         "jitter_ms",
         "reliability",
-        "waveform_correlation",
         "salt_p_value",
         "is_tagged",
         "cluster_id",
@@ -193,9 +192,9 @@ def test_detection_view_real_dataset_workflow(qapp, tmp_path: Path):
 
     # Check tagged candidates exist
     tagged_items = [
-        view.table_units.item(r, 7).text()
+        view.table_units.item(r, 6).text()
         for r in range(view.table_units.rowCount())
-        if view.table_units.item(r, 7).text().startswith("✓")
+        if view.table_units.item(r, 6).text().startswith("✓")
     ]
     assert len(tagged_items) > 0
 
@@ -330,14 +329,14 @@ def test_detection_view_table_column_sorting(qapp, tmp_path: Path):
     assert salt_desc == sorted(salt_desc, reverse=True)
     assert salt_desc[0] > 0.1
 
-    # 3. Test sorting by Status (column 7): Tagged first in ascending
-    view.sort_by_column(7, Qt.SortOrder.AscendingOrder)
-    status_asc = [view.table_units.item(r, 7).text() for r in range(view.table_units.rowCount())]
+    # 3. Test sorting by Status (column 6): Tagged first in ascending
+    view.sort_by_column(6, Qt.SortOrder.AscendingOrder)
+    status_asc = [view.table_units.item(r, 6).text() for r in range(view.table_units.rowCount())]
     assert status_asc[0] == "✓"
     assert status_asc[-1] == "○"
 
-    view.sort_by_column(7)  # toggle to descending -> Untagged first
-    status_desc = [view.table_units.item(r, 7).text() for r in range(view.table_units.rowCount())]
+    view.sort_by_column(6)  # toggle to descending -> Untagged first
+    status_desc = [view.table_units.item(r, 6).text() for r in range(view.table_units.rowCount())]
     assert status_desc[0] == "○"
     assert status_desc[-1] == "✓"
 
@@ -686,66 +685,66 @@ def test_detection_view_checkboxes_and_textboxes(qapp, tmp_path: Path):
     assert view.edit_salt.isEnabled() is True
 
     # Initial state: Unit 0 tagged, Unit 2 (lat ~ 18ms) untagged
-    assert view.table_units.item(0, 7).text() == "✓"
-    assert view.table_units.item(2, 7).text() == "○"
+    assert view.table_units.item(0, 6).text() == "✓"
+    assert view.table_units.item(2, 6).text() == "○"
 
     # 2. Test editing text box value
     # Unit 1 has latency ~ 7.5ms (tagged with default 8.0ms)
-    assert view.table_units.item(1, 7).text() == "✓"
+    assert view.table_units.item(1, 6).text() == "✓"
     view.edit_latency.setText("6.0")
     view._apply_thresholds()
     # Unit 1 (lat ~ 7.5ms) now fails the 6.0ms cutoff -> Untagged
-    assert view.table_units.item(1, 7).text() == "○"
+    assert view.table_units.item(1, 6).text() == "○"
 
     # 3. Test disabling threshold via checkbox
     # When latency checkbox is unchecked:
     view.chk_latency.setChecked(False)
     assert view.edit_latency.isEnabled() is False
     # Unit 1 should now be Tagged because latency filter is disabled!
-    assert view.table_units.item(1, 7).text() == "✓"
+    assert view.table_units.item(1, 6).text() == "✓"
 
     # Re-enable latency checkbox:
     view.chk_latency.setChecked(True)
     assert view.edit_latency.isEnabled() is True
     # Unit 1 fails latency again (since cutoff is still 6.0ms) -> Untagged
-    assert view.table_units.item(1, 7).text() == "○"
+    assert view.table_units.item(1, 6).text() == "○"
 
     # Restore latency to 8.0 -> Unit 1 Tagged again
     view.edit_latency.setText("8.0")
     view._apply_thresholds()
-    assert view.table_units.item(1, 7).text() == "✓"
+    assert view.table_units.item(1, 6).text() == "✓"
 
     # Unit 2 has lat ~ 18ms (> 8ms) and salt p ~ 1.0 (> 0.05).
     # Disabling both latency and SALT thresholds makes Unit 2 Tagged:
-    assert view.table_units.item(2, 7).text() == "○"
+    assert view.table_units.item(2, 6).text() == "○"
     view.chk_latency.setChecked(False)
     view.chk_salt.setChecked(False)
-    assert view.table_units.item(2, 7).text() == "✓"
+    assert view.table_units.item(2, 6).text() == "✓"
     # Restore checkboxes
     view.chk_latency.setChecked(True)
     view.chk_salt.setChecked(True)
-    assert view.table_units.item(2, 7).text() == "○"
+    assert view.table_units.item(2, 6).text() == "○"
 
     # 4. Test disabling SALT p-value threshold
     view.edit_salt.setText("0.00001")
     view._apply_thresholds()
-    assert view.table_units.item(0, 7).text() == "○"
+    assert view.table_units.item(0, 6).text() == "○"
 
     # Uncheck SALT threshold -> Unit 0 should become Tagged even with 0.00001 in text box
     view.chk_salt.setChecked(False)
     assert view.edit_salt.isEnabled() is False
-    assert view.table_units.item(0, 7).text() == "✓"
+    assert view.table_units.item(0, 6).text() == "✓"
 
     # 5. Test manual override takes precedence over checkbox / textbox
     view.table_units.selectRow(0)
     view._toggle_selected_unit_tag()  # Manually Untag Unit 0
-    assert view.table_units.item(0, 7).text() == "○ M"
+    assert view.table_units.item(0, 6).text() == "○ M"
 
     # Changing thresholds or checkboxes does not overwrite manual override
     view.chk_salt.setChecked(True)
     view.edit_salt.setText("0.0500")
     view._apply_thresholds()
-    assert view.table_units.item(0, 7).text() == "○ M"
+    assert view.table_units.item(0, 6).text() == "○ M"
 
     view.close()
 
@@ -769,7 +768,7 @@ def test_detection_view_status_filtering(qapp):
     view.combo_filter_status.setCurrentIndex(idx_tagged)
 
     for r in range(5):
-        status = view.table_units.item(r, 7).text()
+        status = view.table_units.item(r, 6).text()
         if status.startswith("✓"):
             assert not view.table_units.isRowHidden(r)
         else:
@@ -782,7 +781,7 @@ def test_detection_view_status_filtering(qapp):
     view.combo_filter_status.setCurrentIndex(idx_untagged)
 
     for r in range(5):
-        status = view.table_units.item(r, 7).text()
+        status = view.table_units.item(r, 6).text()
         if status.startswith("○"):
             assert not view.table_units.isRowHidden(r)
         else:
@@ -803,7 +802,7 @@ def test_detection_view_status_filtering(qapp):
     # Header section click (column 1: Latency)
     view._on_header_section_clicked(1)
     for r in range(5):
-        status = view.table_units.item(r, 7).text()
+        status = view.table_units.item(r, 6).text()
         if status.startswith("✓"):
             assert not view.table_units.isRowHidden(r)
         else:
@@ -812,7 +811,7 @@ def test_detection_view_status_filtering(qapp):
     # Programmatic sort_by_column (column 0: Unit ID)
     view.sort_by_column(0)
     for r in range(5):
-        status = view.table_units.item(r, 7).text()
+        status = view.table_units.item(r, 6).text()
         if status.startswith("✓"):
             assert not view.table_units.isRowHidden(r)
         else:
@@ -822,7 +821,7 @@ def test_detection_view_status_filtering(qapp):
     view.combo_filter_status.setCurrentIndex(idx_untagged)
     view._on_header_section_clicked(2)
     for r in range(5):
-        status = view.table_units.item(r, 7).text()
+        status = view.table_units.item(r, 6).text()
         if status.startswith("○"):
             assert not view.table_units.isRowHidden(r)
         else:
@@ -843,7 +842,7 @@ def test_detection_view_status_filtering(qapp):
     curr_selected = view.table_units.currentRow()
     assert curr_selected >= 0
     assert not view.table_units.isRowHidden(curr_selected)
-    assert view.table_units.item(curr_selected, 7).text().startswith("✓")
+    assert view.table_units.item(curr_selected, 6).text().startswith("✓")
 
     view.close()
 
@@ -874,7 +873,6 @@ def test_detection_view_protocol_default_stats_and_dialog_reset(qapp, tmp_path: 
         ("latency_window_start_ms", "latency_window_end_ms"),
         ("jitter_window_start_ms", "jitter_window_end_ms"),
         ("salt_window_start_ms", "salt_window_end_ms"),
-        ("wf_evoked_start_ms", "wf_evoked_end_ms"),
     ):
         assert getattr(view.stats_params, start_attr) == pytest.approx(0.0)
         assert getattr(view.stats_params, end_attr) == pytest.approx(10.0)
@@ -892,8 +890,6 @@ def test_detection_view_protocol_default_stats_and_dialog_reset(qapp, tmp_path: 
         jitter_window_end_ms=25.0,
         salt_window_start_ms=1.0,
         salt_window_end_ms=25.0,
-        wf_evoked_start_ms=1.0,
-        wf_evoked_end_ms=25.0,
     )
     dlg = StatsParametersDialog(current_params=customized, default_params=proto_defaults)
     assert dlg.edit_lat_end.text() == "25.0"
@@ -911,8 +907,6 @@ def test_detection_view_protocol_default_stats_and_dialog_reset(qapp, tmp_path: 
     assert reset_params.jitter_window_end_ms == pytest.approx(10.0)
     assert reset_params.salt_window_start_ms == pytest.approx(0.0)
     assert reset_params.salt_window_end_ms == pytest.approx(10.0)
-    assert reset_params.wf_evoked_start_ms == pytest.approx(0.0)
-    assert reset_params.wf_evoked_end_ms == pytest.approx(10.0)
 
     dlg.close()
     view.close()
