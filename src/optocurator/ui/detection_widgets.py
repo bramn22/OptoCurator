@@ -68,7 +68,7 @@ def _compute_kde(samples: np.ndarray, grid: np.ndarray, span: float) -> np.ndarr
         q75, q25 = np.percentile(samples, [75, 25])
         iqr = float(q75 - q25)
         sigma = min(std, iqr / 1.34) if iqr > 0.0 else std
-        bw = 0.9 * sigma * (len(samples) ** (-0.2))
+        bw = 0.5 * sigma * (len(samples) ** (-0.2))
     else:
         bw = span * 0.04
     bw = max(bw, span * 0.025, 1e-6)
