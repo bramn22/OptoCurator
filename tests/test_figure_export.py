@@ -510,10 +510,12 @@ def test_stationary_right_click_builds_expected_menus_on_composite_and_single_wi
     )
     assert captured[-1][1] == ["Save marginal distributions as SVG…", "Save this subplot as SVG…"]
 
-    # SiliconProbeWidget (single export action)
+    # SiliconProbeWidget (single export action on both shank plot and KDE plot)
     probe = SiliconProbeWidget()
     QApplication.sendEvent(probe.plot_widget.viewport(), _make_context_menu_event(QPoint(10, 10), QPoint(160, 160)))
-    assert captured[-1][1] == ["Save figure as SVG…"]
+    assert captured[-1][1] == ["Save probe figure as SVG…"]
+    QApplication.sendEvent(probe.kde_plot.viewport(), _make_context_menu_event(QPoint(10, 10), QPoint(160, 160)))
+    assert captured[-1][1] == ["Save probe figure as SVG…"]
 
     # DetectionView: plot_canvas and criteria row
     dview = DetectionView()

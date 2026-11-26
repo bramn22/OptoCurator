@@ -2772,26 +2772,22 @@ def test_clustering_view_dynamic_probe_switching(qapp, qtbot):
     assert "16" in view.lbl_probe_unit_info.text()
     assert len(view._probe_shank_items) == 1
 
-    # Check selected unit prominent border and non-selected border
+    # Check selected unit is highlighted by cand_marker box and present in units_scatter
     unit_points1 = view.probe_units_scatter.points()
-    for pt in unit_points1:
-        if pt.data() == u1_gid:
-            assert pt.pen().widthF() >= 2.0 or pt.pen().width() >= 2.0
-            assert pt.size() >= 10
-        else:
-            assert pt.pen().widthF() <= 1.0 or pt.pen().width() <= 1.0
-            assert pt.size() <= 9
+    u1_pts = [pt for pt in unit_points1 if pt.data() == u1_gid]
+    assert len(u1_pts) == 1
+    assert view.probe_cand_marker.isVisible() is True
 
     # Probe sites scatter matches Session 1 probe
     sites_data = view.probe_sites_scatter.getData()
     assert np.allclose(sites_data[0], p1[:, 0])
     assert np.allclose(sites_data[1], p1[:, 1])
 
-    # Probe marker is at (16.0, 240.0)
+    # Probe marker is positioned at the focused unit's normalized sub-column x and depth=240.0
     marker_data = view.probe_cand_marker.getData()
-    assert marker_data[0][0] == 16.0
-    assert marker_data[1][0] == 240.0
-    assert view.probe_cand_line.value() == 240.0
+    assert marker_data[0][0] == pytest.approx(float(u1_pts[0].pos().x()))
+    assert marker_data[1][0] == pytest.approx(240.0)
+    assert view.probe_cand_line.value() == pytest.approx(240.0)
 
     # 3. Select unit from Session 2 on shank 2 (x=250.0)
     u2_gid = "02034_83L_20261020_u0008"
@@ -2974,21 +2970,20 @@ def test_clustering_view_probe_marker_jitter_and_shank_shading(qapp):
     view._update_probe_view_for_unit(u1["global_unit_id"])
     qapp.processEvents()
 
-    # Shank shading items: only individual shanks are shaded
+    # Shank shading items: only individual shanks are shaded with COLOR_PROBE_SHANK_FILL
+    from optocurator.ui.theme import COLOR_PROBE_SHANK_FILL
+
     assert len(view._probe_shank_items) == 1
     poly_item = view._probe_shank_items[0]
-    assert poly_item.brush().color().name().upper() == COLOR_PROBE_SHANK_BG.upper()
+    assert poly_item.brush().color().name().upper() == COLOR_PROBE_SHANK_FILL.upper()
 
-    # Verify that the 3 units received jittered x positions rather than being stacked at x=16.0
+    # Verify that the 3 units are placed inside shank 0's dual sub-columns (±0.17)
     points = view.probe_units_scatter.points()
     assert len(points) == 3
 
-    x_positions = [pt.pos().x() for pt in points]
-    # All 3 positions must be distinct
-    assert len(set(x_positions)) == 3
-    # All x positions should remain clustered around 16.0 within a reasonable jitter radius (< 15 um)
+    x_positions = [float(pt.pos().x()) for pt in points]
     for x_val in x_positions:
-        assert abs(x_val - 16.0) <= 25.0
+        assert abs(x_val) == pytest.approx(0.17)
 
     # Verify clicking overlapping points array does not raise ValueError
     pts_array = np.array(points[:2])
@@ -2998,8 +2993,7 @@ def test_clustering_view_probe_marker_jitter_and_shank_shading(qapp):
     view._on_scatter_point_clicked(view.scatter_item, pts_array)
     qapp.processEvents()
 
-    # Verify continuous-depth proximity clustering: units with slightly different depths
-    # (e.g. 100.0, 104.2, 108.5) on the same column receive distinct honeycomb positions
+    # Verify adding units with slightly different depths renders all 5 horizontal bars at their exact depths
     u4 = {"global_unit_id": f"{sess_id}_u004", "session_id": sess_id, "unit_id": 4, "depth": 104.2, "probe_x": 16.0, "cluster_id": 0}
     u5 = {"global_unit_id": f"{sess_id}_u005", "session_id": sess_id, "unit_id": 5, "depth": 108.5, "probe_x": 16.0, "cluster_id": 1}
     view._pooled_units_map[u4["global_unit_id"]] = u4
@@ -3010,8 +3004,9 @@ def test_clustering_view_probe_marker_jitter_and_shank_shading(qapp):
 
     pts_5 = view.probe_units_scatter.points()
     assert len(pts_5) == 5
-    pos_set = {(round(pt.pos().x(), 2), round(pt.pos().y(), 2)) for pt in pts_5}
-    assert len(pos_set) == 5, "All 5 units in vertical proximity cluster must have distinct honeycomb positions"
+    y_by_gid = {pt.data(): float(pt.pos().y()) for pt in pts_5}
+    assert y_by_gid[u4["global_unit_id"]] == pytest.approx(104.2)
+    assert y_by_gid[u5["global_unit_id"]] == pytest.approx(108.5)
 
     view.close()
 

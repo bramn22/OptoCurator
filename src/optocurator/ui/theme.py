@@ -115,6 +115,7 @@ COLOR_SURFACE_SUBTLE: str = "#F8FAFC"
 COLOR_SURFACE_MUTED: str = "#F1F5F9"
 COLOR_PROBE_SITE: str = "#CBD5E1"
 COLOR_PROBE_SHANK_BG: str = "#F8FAFC"
+COLOR_PROBE_SHANK_FILL: str = "#DCE1E8"
 COLOR_PROBE_SHANK_BORDER: str = "#E2E8F0"
 COLOR_AUTO_ASSIGNED: str = "#2563EB"
 
@@ -263,7 +264,14 @@ PLOT_CARD_PSTH_LEFT_MARGIN: int = 34
 PLOT_CLUSTER_PROB_SIZE: Tuple[int, int] = (232, 90)
 PLOT_METRIC_KDE_SIZE: Tuple[int, int] = (128, 44)
 PLOT_EMBEDDING_SIZE: Tuple[int, int] = (268, 268)
-PLOT_PROBE_SIZE: Tuple[int, int] = (76, 268)
+PLOT_PROBE_LEFT_MARGIN: int = 44
+PLOT_PROBE_SHANK_WIDTH: int = 32
+PLOT_PROBE_KDE_WIDTH: int = 46
+PLOT_PROBE_HEIGHT: int = 268
+PLOT_PROBE_SIZE: Tuple[int, int] = (
+    PLOT_PROBE_LEFT_MARGIN + PLOT_PROBE_SHANK_WIDTH + PLOT_PROBE_KDE_WIDTH,
+    PLOT_PROBE_HEIGHT,
+)
 CLUSTER_CARD_SIZE: Tuple[int, int] = (217, 148)
 
 PLOT_DETECTION_RASTER_SIZE: Tuple[int, int] = (520, 240)
@@ -2551,9 +2559,8 @@ DETECTION_SUBTLE_BTN_STYLE: str = f"""
 """
 
 DETECTION_PROBE_LEGEND_HTML: str = (
-    f"<span style='color:{COLOR_SUCCESS};'>&#9679;</span> Tagged<br>"
-    f"<span style='color:{COLOR_UNASSIGNED};'>&#9679;</span> Untagged<br>"
-    f"<span style='color:{COLOR_ACCENT}; font-weight:700;'>&#9675;</span> Focused unit"
+    f"<span style='color:{COLOR_SUCCESS}; font-weight:700;'>&#9644;</span> Tagged<br>"
+    f"<span style='color:{COLOR_UNASSIGNED}; font-weight:700;'>&#9644;</span> Untagged"
 )
 
 DETECTION_PAIRPLOT_LEGEND_HTML: str = (

@@ -1375,9 +1375,7 @@ class DetectionView(QWidget):
         self.raster_plot.clear()
         self.psth_plot.clear()
         self.pairplot_widget.set_data([], [], [], [], [])
-        self.probe_widget.sites_scatter.setData(x=[], y=[])
-        self.probe_widget.units_scatter.setData(x=[], y=[])
-        self.probe_widget.cand_marker.setData(x=[], y=[])
+        self.probe_widget.clear_probe()
 
         self.lbl_focused_unit_title.setText("No unit selected")
         self.lbl_focused_unit_meta.setText("Load an experiment folder to inspect units")
@@ -2219,56 +2217,39 @@ class DetectionView(QWidget):
 
     def _update_probe_widget(self) -> None:
         if not self.units:
-            self.probe_widget.sites_scatter.setData(x=[], y=[])
-            self.probe_widget.units_scatter.setData(x=[], y=[])
-            self.probe_widget.cand_marker.setData(x=[], y=[])
-            self.probe_widget.cand_line.setVisible(False)
+            self.probe_widget.clear_probe()
             return
 
-        if self._channel_positions is not None and len(self._channel_positions) > 0:
-            self.probe_widget.sites_scatter.setData(
-                x=self._channel_positions[:, 0],
-                y=self._channel_positions[:, 1],
-            )
-        else:
-            seen_pos = {(float(u.probe_x), float(u.depth)) for u in self.units}
-            if seen_pos:
-                sx = [p[0] for p in seen_pos]
-                sy = [p[1] for p in seen_pos]
-                self.probe_widget.sites_scatter.setData(x=sx, y=sy)
-
-        spots: List[Dict[str, Any]] = []
-        focused_pos: Optional[Tuple[float, float]] = None
+        probe_units: List[Dict[str, Any]] = []
+        all_depths: List[float] = []
+        tagged_depths: List[float] = []
         for u in self.units:
             m = self.metrics.get(u.unit_id)
             is_tagged = bool(m.is_tagged) if m else False
-            is_focused = u.unit_id == self._focused_unit_id
             px = float(u.probe_x)
             py = float(u.depth)
-            if is_focused:
-                focused_pos = (px, py)
-            spots.append({
-                "pos": (px, py),
-                "size": 10 if is_tagged else 6,
-                "brush": pg.mkBrush(COLOR_SUCCESS if is_tagged else COLOR_UNASSIGNED),
-                "pen": pg.mkPen(COLOR_ACCENT, width=2.0) if is_focused else pg.mkPen(COLOR_PANEL, width=0.6),
-                "data": u.unit_id,
+            status = "Tagged" if is_tagged else "Untagged"
+            all_depths.append(py)
+            if is_tagged:
+                tagged_depths.append(py)
+            probe_units.append({
+                "id": u.unit_id,
+                "probe_x": px,
+                "depth": py,
+                "color": COLOR_SUCCESS if is_tagged else COLOR_UNASSIGNED,
+                "alpha": 255,
+                "priority": 1 if is_tagged else 0,
+                "tooltip": f"Unit u{int(u.unit_id):04d} ({status}) · Depth {py:.0f} µm",
             })
 
-        self.probe_widget.units_scatter.setData(spots=spots)
-
-        if focused_pos is not None:
-            self.probe_widget.cand_marker.setSymbol("o")
-            self.probe_widget.cand_marker.setSize(13)
-            self.probe_widget.cand_marker.setBrush(pg.mkBrush(0, 0, 0, 0))
-            self.probe_widget.cand_marker.setPen(pg.mkPen(COLOR_ACCENT, width=2.0))
-            self.probe_widget.cand_marker.setData(x=[focused_pos[0]], y=[focused_pos[1]])
-            self.probe_widget.cand_marker.setVisible(True)
-            self.probe_widget.cand_line.setValue(focused_pos[1])
-            self.probe_widget.cand_line.setVisible(False)
-        else:
-            self.probe_widget.cand_marker.setVisible(False)
-            self.probe_widget.cand_line.setVisible(False)
+        self.probe_widget.set_probe_data(
+            channel_positions=self._channel_positions,
+            units=probe_units,
+            focused_id=self._focused_unit_id,
+            bg_kde_depths=all_depths,
+            fg_kde_depths=tagged_depths,
+            fg_kde_color=COLOR_SUCCESS,
+        )
 
     def _on_window_text_edited(self) -> None:
         """Parse display-only window start and end from text boxes; ignore invalid ranges."""

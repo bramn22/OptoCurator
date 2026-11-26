@@ -7021,196 +7021,89 @@ class ClusteringView(QWidget):
             else:
                 self.lbl_probe_unit_info.setText(f"Ch {ch}  |  Depth: {depth:.0f} μm  |  X: {probe_x:.0f} μm")
 
-        # Session probe switching and shank silhouette rendering
-        if self._current_probe_session_id != sess_id:
-            self._current_probe_session_id = sess_id
+        self._current_probe_session_id = sess_id
 
-            # Remove previous shank silhouettes and labels
-            for item in self._probe_shank_items + self._probe_shank_labels:
-                try:
-                    self.probe_plot.removeItem(item)
-                except Exception:
-                    pass
-            self._probe_shank_items.clear()
-            self._probe_shank_labels.clear()
+        # Gather all pooled units belonging to this session
+        session_units = [
+            (u_gid, u_rec)
+            for u_gid, u_rec in self._pooled_units_map.items()
+            if str(u_rec.get("session_id", "")) == sess_id
+        ]
 
-            # Render background silicon shank silhouettes
-            shank_brush = QBrush(QColor(COLOR_PROBE_SHANK_BG))
-            shank_pen = QPen(QColor(COLOR_PROBE_SHANK_BORDER), 1.0)
-            for shank in shanks:
-                hw = shank["width"] / 2.0
-                cx = shank["center_x"]
-                y_min = shank["y_min"]
-                y_top = shank["y_max"] + 40.0
-                tip_y = y_min - 50.0
+        open_cid = self._comparison_cluster_id
 
-                poly = QPolygonF([
-                    QPointF(cx - hw, y_top),
-                    QPointF(cx + hw, y_top),
-                    QPointF(cx + hw, y_min),
-                    QPointF(cx, tip_y),
-                    QPointF(cx - hw, y_min),
-                ])
-                poly_item = QGraphicsPolygonItem(poly)
-                poly_item.setBrush(shank_brush)
-                poly_item.setPen(shank_pen)
-                poly_item.setZValue(1)
-                self.probe_plot.addItem(poly_item)
-                self._probe_shank_items.append(poly_item)
+        probe_units: List[Dict[str, Any]] = []
+        bg_depths: List[float] = []
+        cluster_depths: Dict[int, List[float]] = {}
 
-                shank_num = pg.TextItem(
-                    str(shank["shank_index"] + 1),
-                    color=COLOR_TEXT_MUTED,
-                    anchor=(0.5, 0.0),
-                )
-                shank_num.setFont(make_font(FONT_SIZE_TICK))
-                shank_num.setPos(cx, tip_y - 10.0)
-                shank_num.setZValue(2)
-                self.probe_plot.addItem(shank_num)
-                self._probe_shank_labels.append(shank_num)
+        for u_gid, u_rec in session_units:
+            ux = float(u_rec.get("probe_x", 0.0))
+            uy = float(u_rec.get("depth", 0.0))
+            ucid = int(u_rec.get("cluster_id", -1))
+            bg_depths.append(uy)
+            if ucid >= 0:
+                cluster_depths.setdefault(ucid, []).append(uy)
 
-            if hasattr(self, "probe_sites_scatter"):
-                self.probe_sites_scatter.setData(x=sites[:, 0], y=sites[:, 1])
-                self.probe_sites_scatter.setZValue(5)
-
-            # Viewport ranges with shank width and tip padding
-            if shanks:
-                all_cx = [s["center_x"] for s in shanks]
-                all_hw = [s["width"] / 2.0 for s in shanks]
-                min_x = min(c - w for c, w in zip(all_cx, all_hw))
-                max_x = max(c + w for c, w in zip(all_cx, all_hw))
-                min_y = min(s["y_min"] - 60.0 for s in shanks)
-                max_y = max(s["y_max"] + 50.0 for s in shanks)
-                pad_x = 40.0
-                self.probe_plot.setXRange(min_x - pad_x, max_x + pad_x, padding=0)
-                self.probe_plot.setYRange(min_y - 20.0, max_y + 20.0, padding=0)
-                self.probe_plot.getAxis("left").setTicks(_compute_clean_range_ticks(min_y - 20.0, max_y + 20.0, max_ticks=3))
-            elif sites is not None and len(sites) > 0:
-                min_x, max_x = float(np.min(sites[:, 0])), float(np.max(sites[:, 0]))
-                min_y, max_y = float(np.min(sites[:, 1])), float(np.max(sites[:, 1]))
-                pad_x = max(20.0, (max_x - min_x) * 0.25)
-                pad_y = max(50.0, (max_y - min_y) * 0.05)
-                self.probe_plot.setXRange(min_x - pad_x, max_x + pad_x, padding=0)
-                self.probe_plot.setYRange(min_y - pad_y, max_y + pad_y, padding=0)
-                self.probe_plot.getAxis("left").setTicks(_compute_clean_range_ticks(min_y - pad_y, max_y + pad_y, max_ticks=3))
-
-        # Render all units from this session colored by cluster, with selected unit prominent
-        if hasattr(self, "probe_units_scatter"):
-            # Gather units for this session
-            session_units = [
-                (u_gid, u_rec)
-                for u_gid, u_rec in self._pooled_units_map.items()
-                if str(u_rec.get("session_id", "")) == sess_id
-            ]
-
-            layout_key = (sess_id, len(session_units))
-            if layout_key in self._probe_layout_cache:
-                jitter_offsets = self._probe_layout_cache[layout_key]
-            else:
-                col_groups: Dict[float, List[Tuple[str, float, float]]] = {}
-                for u_gid, u_rec in session_units:
-                    ux = float(u_rec.get("probe_x", 0.0))
-                    uy = float(u_rec.get("depth", 0.0))
-                    # Round nominal X to nearest 15.0 µm to group sites by column/shank
-                    c_key = round(ux / 15.0) * 15.0
-                    col_groups.setdefault(c_key, []).append((u_gid, ux, uy))
-
-                jitter_offsets = {}
-                dx_step = 6.0
-                dy_step = 28.0
-                for c_key, c_units in col_groups.items():
-                    c_units.sort(key=lambda item: item[2])
-                    # Cluster units within 28.0 µm vertical proximity
-                    clusters: List[List[Tuple[str, float, float]]] = []
-                    for item in c_units:
-                        if not clusters or (item[2] - clusters[-1][-1][2] > 28.0):
-                            clusters.append([item])
-                        else:
-                            clusters[-1].append(item)
-
-                    for clust in clusters:
-                        k = len(clust)
-                        if k == 1:
-                            jitter_offsets[clust[0][0]] = (0.0, 0.0)
-                        elif k == 2:
-                            jitter_offsets[clust[0][0]] = (-0.5 * dx_step, 0.0)
-                            jitter_offsets[clust[1][0]] = (0.5 * dx_step, 0.0)
-                        elif k == 3:
-                            jitter_offsets[clust[0][0]] = (-dx_step, 0.0)
-                            jitter_offsets[clust[1][0]] = (0.0, 0.0)
-                            jitter_offsets[clust[2][0]] = (dx_step, 0.0)
-                        elif k == 4:
-                            jitter_offsets[clust[0][0]] = (-0.5 * dx_step, -0.5 * dy_step)
-                            jitter_offsets[clust[1][0]] = (0.5 * dx_step, -0.5 * dy_step)
-                            jitter_offsets[clust[2][0]] = (-0.5 * dx_step, 0.5 * dy_step)
-                            jitter_offsets[clust[3][0]] = (0.5 * dx_step, 0.5 * dy_step)
-                        else:
-                            # General k >= 5: radial hexagonal candidate slots
-                            max_cols = 2
-                            candidates = []
-                            for r in range(-4, 5):
-                                for c in range(-max_cols, max_cols + 1):
-                                    hx = c * dx_step + (0.5 * dx_step if (r % 2 != 0) else 0.0)
-                                    hy = r * dy_step
-                                    dist = (hx / dx_step) ** 2 + (hy / dy_step) ** 2
-                                    candidates.append((dist, hx, hy))
-                            candidates.sort(key=lambda it: (it[0], abs(it[1]), abs(it[2])))
-                            clust_sorted = sorted(clust, key=lambda it: it[2])
-                            cand_sorted = sorted(candidates[:k], key=lambda it: it[2])
-                            for (u_id, _, _), cand in zip(clust_sorted, cand_sorted):
-                                jitter_offsets[u_id] = (cand[1], cand[2])
-                self._probe_layout_cache[layout_key] = jitter_offsets
-
-            unit_spots = []
-            selected_pos = (probe_x, depth)
-            open_cid = self._comparison_cluster_id
-            for u_gid, u_rec in session_units:
-                ux = float(u_rec.get("probe_x", 0.0))
-                uy = float(u_rec.get("depth", 0.0))
-                dx, dy = jitter_offsets.get(u_gid, (0.0, 0.0))
-                plot_x = ux + dx
-                plot_y = uy + dy
-
-                ucid = int(u_rec.get("cluster_id", -1))
-                color = self._get_cluster_color(ucid)
-
-                is_selected = (u_gid == gid)
-                if is_selected:
-                    size = PROBE_UNIT_FOCUSED_SIZE
-                    pen = pg.mkPen(COLOR_TEXT, width=EMBEDDING_FOCUSED_RING_WIDTH)
-                    brush = pg.mkBrush(color)
-                    selected_pos = (plot_x, plot_y)
-                elif open_cid is not None:
-                    if ucid == open_cid:
-                        size = PROBE_UNIT_EMPHASIS_SIZE
-                        pen = pg.mkPen(COLOR_PANEL, width=0.8)
-                        brush = pg.mkBrush(color)
-                    else:
-                        size = max(5, PROBE_UNIT_SIZE - 1)
-                        pen = None
-                        brush = pg.mkBrush(rgba_from_hex(color, PROBE_DIM_ALPHA))
+            if open_cid is not None and open_cid >= 0:
+                if ucid == open_cid:
+                    color = self._get_cluster_color(ucid)
+                    alpha = 255
+                    priority = 1
+                elif ucid >= 0:
+                    color = self._get_cluster_color(ucid)
+                    alpha = PROBE_DIM_ALPHA
+                    priority = 0
                 else:
-                    size = PROBE_UNIT_SIZE
-                    pen = pg.mkPen(COLOR_PANEL, width=0.6)
-                    brush = pg.mkBrush(color)
+                    color = COLOR_UNASSIGNED
+                    alpha = PROBE_DIM_ALPHA
+                    priority = 0
+            else:
+                if ucid >= 0:
+                    color = self._get_cluster_color(ucid)
+                    alpha = 255
+                    priority = 1
+                else:
+                    color = COLOR_UNASSIGNED
+                    alpha = 255
+                    priority = 0
 
-                unit_spots.append({
-                    "pos": (plot_x, plot_y),
-                    "data": u_gid,
-                    "brush": brush,
-                    "size": size,
-                    "pen": pen,
-                })
-            self.probe_units_scatter.setData(spots=unit_spots)
-            self.probe_units_scatter.setZValue(10)
+            cname = self._cluster_names.get(ucid, f"Cluster {ucid}") if ucid >= 0 else "Unassigned"
+            u_num = u_rec.get("unit_id", "")
+            probe_units.append({
+                "id": u_gid,
+                "probe_x": ux,
+                "depth": uy,
+                "color": color,
+                "alpha": alpha,
+                "priority": priority,
+                "tooltip": f"u{int(u_num):04d} ({cname}) · Depth {uy:.0f} µm" if str(u_num).isdigit() else f"{u_gid} ({cname}) · Depth {uy:.0f} µm",
+            })
 
-        # Keep candidate diamond/line updated for compatibility, hidden in clustering mode
-        # where the focused unit is shown with the dark ring on probe_units_scatter (§ 7.3)
-        if hasattr(self, "probe_cand_marker") and hasattr(self, "probe_cand_line"):
-            self.probe_cand_marker.setVisible(False)
-            self.probe_cand_line.setVisible(False)
-            self.probe_cand_marker.setData(x=[selected_pos[0]], y=[selected_pos[1]])
-            self.probe_cand_line.setValue(depth)
+        if open_cid is not None and open_cid >= 0:
+            fg_kdes_arg: Optional[List[Tuple[List[float], str]]] = None
+            fg_depths_arg: List[float] = cluster_depths.get(int(open_cid), [])
+            fg_color_arg: str = self._get_cluster_color(int(open_cid))
+        else:
+            card_order = [int(c) for c in getattr(self, "_cluster_card_order", []) if int(c) in cluster_depths]
+            remaining = [c for c in sorted(cluster_depths.keys()) if c not in card_order]
+            ordered_cids = card_order + remaining
+            fg_kdes_arg = [
+                (cluster_depths[c], self._get_cluster_color(c))
+                for c in ordered_cids
+            ]
+            fg_depths_arg = []
+            fg_color_arg = COLOR_ACCENT
+
+        self.probe_widget.set_probe_data(
+            channel_positions=sites,
+            units=probe_units,
+            focused_id=gid,
+            bg_kde_depths=bg_depths,
+            fg_kde_depths=fg_depths_arg,
+            fg_kde_color=fg_color_arg,
+            fg_kdes=fg_kdes_arg,
+        )
+        self._probe_shank_items = list(self.probe_widget._shank_rect_items)
 
     def _update_marginal_distributions(self, feature_values: Dict[str, float]) -> None:
         """Update vertical indicator lines on population feature curves."""
@@ -8542,6 +8435,9 @@ class ClusteringView(QWidget):
                 del self._experiment_probes[session_id]
             if self._current_probe_session_id == session_id:
                 self._current_probe_session_id = None
+                self._probe_shank_items.clear()
+                if hasattr(self, "probe_widget"):
+                    self.probe_widget.clear_probe()
             if session_id in self._experiment_spikes:
                 del self._experiment_spikes[session_id]
             if session_id in self._experiment_stimulus:
@@ -8616,6 +8512,8 @@ class ClusteringView(QWidget):
         self._current_probe_session_id = None
         self._probe_shank_items.clear()
         self._probe_shank_labels.clear()
+        if hasattr(self, "probe_widget"):
+            self.probe_widget.clear_probe()
         self._experiment_spikes.clear()
         self._experiment_stimulus.clear()
         self._experiment_pulse_durations.clear()

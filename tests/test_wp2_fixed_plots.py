@@ -129,9 +129,11 @@ def test_wp2_all_clustering_plots_fixed_size_and_do_not_resize_with_window(qapp)
         assert (view.pca_plot.width(), view.pca_plot.height()) == PLOT_EMBEDDING_SIZE
         assert view.cand_scatter.opts["pen"].color().name().upper() == COLOR_TEXT.upper()
 
-        # 6. Probe plot (76x268, matches embedding height)
+        # 6. Probe plot (fixed height 268, width = 44 + 32 * n_shanks + 46; does not resize with window)
         assert isinstance(view.probe_widget, SiliconProbeWidget)
-        assert (view.probe_plot.width(), view.probe_plot.height()) == PLOT_PROBE_SIZE
+        expected_probe_w = 44 + 32 * view.probe_widget._n_shanks + 46
+        assert (view.probe_widget.width(), view.probe_widget.height()) == (expected_probe_w, PLOT_PROBE_SIZE[1])
+        assert view.probe_widget.height() == view.pca_plot.height()
         assert view.probe_plot.height() == view.pca_plot.height()
 
     _assert_sizes()

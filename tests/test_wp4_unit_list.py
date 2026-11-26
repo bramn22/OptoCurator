@@ -218,20 +218,20 @@ def test_wp4_embedding_and_probe_methods_ring_and_cluster_emphasis(qapp):
         assert all(a == 255 for a in member_alphas)
         assert all(a == EMBEDDING_DIM_ALPHA for a in non_member_alphas)
 
-    # Probe points emphasis/dimming (non-focused, non-member units dimmed)
+    # Probe points emphasis/dimming (all bars opaque alpha==255; non-open clusters use muted pre-blended RGB; focused box drawn by cand_marker)
     focused_gid = view._current_selected_gid
     probe_spots = view.probe_units_scatter.points()
     assert len(probe_spots) > 0
+    assert view.probe_widget.cand_marker.isVisible() is True
+    assert view.probe_widget.cand_marker.opts["pen"].color().name().upper() == COLOR_TEXT.upper()
     for pt in probe_spots:
         gid = str(pt.data())
-        if gid == focused_gid:
-            assert pt.pen().color().name().upper() == COLOR_TEXT.upper()
-            continue
         cid = int(view._pooled_units_map.get(gid, {}).get("cluster_id", -1))
+        assert pt.brush().color().alpha() == 255
         if cid == open_cid:
-            assert pt.brush().color().alpha() == 255
-        else:
-            assert pt.brush().color().alpha() == PROBE_DIM_ALPHA
+            assert pt.brush().color().name().upper() == view._get_cluster_color(cid).upper()
+        elif cid >= 0:
+            assert pt.brush().color().name().upper() != view._get_cluster_color(cid).upper()
 
     # Closing cluster restores full opacity
     view.clear_cluster_comparison()

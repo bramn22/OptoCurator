@@ -1,12 +1,20 @@
 """Live pyqtgraph plot helpers for Phase 1 Detection View and Phase 2 Inspection (§ 8.2)."""
 
 import re
-from typing import Any, Callable, Dict, List, Optional, Tuple, Union
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Union
 import numpy as np
 import pyqtgraph as pg
 from PyQt6.QtCore import QRectF, QSize, Qt
-from PyQt6.QtGui import QTransform
-from PyQt6.QtWidgets import QSizePolicy, QTableWidgetItem, QVBoxLayout, QWidget
+from PyQt6.QtGui import QPainterPath, QTransform
+from PyQt6.QtWidgets import (
+    QGraphicsPathItem,
+    QGraphicsRectItem,
+    QHBoxLayout,
+    QSizePolicy,
+    QTableWidgetItem,
+    QVBoxLayout,
+    QWidget,
+)
 
 from optocurator.models import DEFAULT_PULSE_DURATION_MS
 from optocurator.ui.figure_export import install_figure_export_menu
@@ -17,7 +25,10 @@ from optocurator.ui.theme import (
     COLOR_CANDIDATE_MARKER,
     COLOR_LIGHT_PULSE_BAND,
     COLOR_PANEL,
+    COLOR_POPULATION_CURVE,
+    COLOR_PROBE_SHANK_FILL,
     COLOR_PROBE_SITE,
+    COLOR_SUCCESS,
     COLOR_TEXT,
     COLOR_TEXT_MUTED,
     FONT_SIZE_CAPTION,
@@ -25,12 +36,17 @@ from optocurator.ui.theme import (
     PLOT_AXIS_LABEL_COMPACT_STYLE,
     PLOT_AXIS_LABEL_STYLE,
     PLOT_HIST_BRUSH,
+    PLOT_PROBE_HEIGHT,
+    PLOT_PROBE_KDE_WIDTH,
+    PLOT_PROBE_LEFT_MARGIN,
+    PLOT_PROBE_SHANK_WIDTH,
     PLOT_PROBE_SIZE,
     PLOT_UNIT_RESPONSE_GAP,
     PLOT_UNIT_RESPONSE_LEFT_MARGIN,
     PLOT_UNIT_RESPONSE_PSTH_SIZE,
     PLOT_UNIT_RESPONSE_RASTER_SIZE,
     PSTH_LINE_WIDTH,
+    hex_to_rgb,
     make_font,
     rgba_from_hex,
 )
@@ -950,26 +966,172 @@ class UnitResponsePlot(QWidget):
         )
 
 
+def _build_unit_bar_path() -> QPainterPath:
+    """Create crisp thin horizontal bar symbol path for probe unit markers."""
+    path = QPainterPath()
+    path.addRect(QRectF(-0.5, -0.09, 1.0, 0.18))
+    return path
+
+
+def _build_focused_box_path() -> QPainterPath:
+    """Create hollow rectangular frame symbol path hugging the focused probe unit bar."""
+    path = QPainterPath()
+    path.addRect(QRectF(-0.5, -0.19, 1.0, 0.38))
+    return path
+
+
+def _blend_opaque_rgba(fg_hex: str, bg_hex: str, alpha: int) -> Tuple[int, int, int, int]:
+    """Blend `fg_hex` over `bg_hex` at `alpha` (0–255) into a solid opaque RGBA tuple."""
+    a = max(0.0, min(1.0, float(alpha) / 255.0))
+    fr, fg, fb = hex_to_rgb(fg_hex)
+    if a >= 1.0:
+        return (fr, fg, fb, 255)
+    br, bg, bb = hex_to_rgb(bg_hex)
+    r = int(round(a * fr + (1.0 - a) * br))
+    g = int(round(a * fg + (1.0 - a) * bg))
+    b = int(round(a * fb + (1.0 - a) * bb))
+    return (r, g, b, 255)
+
+
+_UNIT_BAR_PATH: QPainterPath = _build_unit_bar_path()
+_FOCUSED_BOX_PATH: QPainterPath = _build_focused_box_path()
+_PROBE_SHANK_FILL: str = COLOR_PROBE_SHANK_FILL
+_PROBE_KDE_BG_COLOR: str = COLOR_POPULATION_CURVE
+
+
+def detect_probe_shanks(
+    channel_positions: Optional[np.ndarray],
+    unit_x: Optional[Sequence[float]] = None,
+    unit_y: Optional[Sequence[float]] = None,
+    gap_um: float = 100.0,
+) -> List[Dict[str, Any]]:
+    """Detect probe shanks by clustering unique finite X coordinates separated by `> gap_um` µm."""
+    pts: Optional[np.ndarray] = None
+    if channel_positions is not None:
+        arr = np.asarray(channel_positions, dtype=np.float64)
+        if arr.ndim == 2 and arr.shape[1] >= 2 and arr.shape[0] > 0:
+            finite = np.isfinite(arr[:, 0]) & np.isfinite(arr[:, 1])
+            if np.any(finite):
+                pts = arr[finite, :2]
+
+    if pts is None and unit_x is not None and unit_y is not None:
+        ux = np.asarray(unit_x, dtype=np.float64).ravel()
+        uy = np.asarray(unit_y, dtype=np.float64).ravel()
+        n = min(len(ux), len(uy))
+        if n > 0:
+            ux, uy = ux[:n], uy[:n]
+            finite = np.isfinite(ux) & np.isfinite(uy)
+            if np.any(finite):
+                pts = np.column_stack((ux[finite], uy[finite]))
+
+    if pts is None or len(pts) == 0:
+        return [
+            {
+                "shank_index": 0,
+                "x_min": 0.0,
+                "x_max": 0.0,
+                "x_median": 0.0,
+                "y_min": 0.0,
+                "y_max": 1000.0,
+            }
+        ]
+
+    unique_x = np.unique(pts[:, 0])
+    groups: List[List[float]] = [[float(unique_x[0])]]
+    for xv in unique_x[1:]:
+        if float(xv) - groups[-1][-1] > float(gap_um):
+            groups.append([float(xv)])
+        else:
+            groups[-1].append(float(xv))
+
+    shanks: List[Dict[str, Any]] = []
+    for s_idx, x_grp in enumerate(groups):
+        x_lo, x_hi = float(x_grp[0]), float(x_grp[-1])
+        mask = (pts[:, 0] >= x_lo - 1e-6) & (pts[:, 0] <= x_hi + 1e-6)
+        ys = pts[mask, 1]
+        y_lo = float(np.min(ys)) if len(ys) > 0 else 0.0
+        y_hi = float(np.max(ys)) if len(ys) > 0 else 1000.0
+        if y_hi <= y_lo:
+            y_lo -= 50.0
+            y_hi += 50.0
+        shanks.append(
+            {
+                "shank_index": s_idx,
+                "x_min": x_lo,
+                "x_max": x_hi,
+                "x_median": 0.5 * (x_lo + x_hi),
+                "y_min": y_lo,
+                "y_max": y_hi,
+            }
+        )
+    return shanks
+
+
+def _compute_vertical_depth_kde(
+    depths: np.ndarray,
+    y_grid: np.ndarray,
+    span: float,
+) -> np.ndarray:
+    """Compute a peak-normalized (max = 1.0) Gaussian KDE along depth `y_grid`."""
+    arr = np.asarray(depths, dtype=np.float64).ravel()
+    arr = arr[np.isfinite(arr)]
+    if len(arr) == 0 or len(y_grid) == 0:
+        return np.zeros_like(y_grid, dtype=np.float64)
+
+    std = float(np.std(arr)) if len(arr) > 1 else 0.0
+    if len(arr) > 1 and std > 0.0:
+        q75, q25 = np.percentile(arr, [75, 25])
+        iqr = float(q75 - q25)
+        sigma = min(std, iqr / 1.34) if iqr > 0.0 else std
+        bw = 0.9 * sigma * (len(arr) ** (-0.2))
+    else:
+        bw = span * 0.05
+    bw = max(bw, span * 0.03, 1.0)
+
+    diff = (y_grid[:, None] - arr[None, :]) / bw
+    density = np.mean(np.exp(-0.5 * diff * diff), axis=1) / (bw * np.sqrt(2.0 * np.pi))
+    max_d = float(np.max(density))
+    if max_d > 0.0:
+        density = density / max_d
+    return density
+
+
+def _build_horizontal_kde_path(density: np.ndarray, y_grid: np.ndarray) -> QPainterPath:
+    """Construct a closed vector QPainterPath filling from x=0 to x=density(y)."""
+    path = QPainterPath()
+    if len(density) == 0 or len(y_grid) == 0:
+        return path
+    path.moveTo(0.0, float(y_grid[0]))
+    for xv, yv in zip(density, y_grid):
+        path.lineTo(float(xv), float(yv))
+    path.lineTo(0.0, float(y_grid[-1]))
+    path.closeSubpath()
+    return path
+
+
 class SiliconProbeWidget(QWidget):
-    """Reusable fixed-size silicon probe plot widget (§ 7.3, § 8.1)."""
+    """Multi-shank silicon probe widget with horizontal unit bars and vertical depth KDE."""
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
-        self.setFixedSize(*PLOT_PROBE_SIZE)
-        self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+        self._n_shanks: int = 1
+        self._shank_rect_items: List[QGraphicsRectItem] = []
+        self._extra_kde_items: List[Tuple[QGraphicsPathItem, pg.PlotCurveItem]] = []
+        self._unit_tooltips: Dict[Any, str] = {}
 
-        layout = QVBoxLayout(self)
+        layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
+        # Left: Multi-shank probe plot
         self.plot_widget = pg.PlotWidget(self)
-        self.plot_widget.setFixedSize(*PLOT_PROBE_SIZE)
         self.plot_widget.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         self.plot_widget.setMouseEnabled(x=False, y=False)
         apply_plot_style(
             self.plot_widget,
             compact=True,
             left_label="Depth (µm)",
+            left_margin=PLOT_PROBE_LEFT_MARGIN,
         )
         left_ax = self.plot_widget.getAxis("left")
         if left_ax is not None:
@@ -980,51 +1142,436 @@ class SiliconProbeWidget(QWidget):
                 tickLength=-3,
                 autoExpandTextSpace=True,
             )
-        self.plot_widget.hideAxis("bottom")
-        self.plot_widget.getPlotItem().setContentsMargins(2, 4, 2, 14)
+        bottom_ax = self.plot_widget.getAxis("bottom")
+        if bottom_ax is not None:
+            bottom_ax.setPen(pg.mkPen(None))
+            bottom_ax.setStyle(
+                tickFont=make_font(FONT_SIZE_TICK),
+                tickTextOffset=3,
+                tickLength=0,
+                showValues=True,
+            )
+        self.plot_widget.showAxis("bottom", True)
+        self.plot_widget.getPlotItem().setContentsMargins(0, 4, 2, 4)
         layout.addWidget(self.plot_widget)
 
+        # Compatibility site scatter (kept hidden so grey shank silhouettes stay crisp)
         self.sites_scatter = pg.ScatterPlotItem(
-            size=5,
+            size=4,
             symbol="s",
             brush=pg.mkBrush(COLOR_PROBE_SITE),
             pen=None,
         )
         self.sites_scatter.setZValue(5)
+        self.sites_scatter.setVisible(False)
         self.plot_widget.addItem(self.sites_scatter)
 
+        # Unit horizontal bar markers
         self.units_scatter = pg.ScatterPlotItem(
-            size=9,
-            symbol="o",
+            size=11,
+            symbol=_UNIT_BAR_PATH,
             brush=pg.mkBrush(COLOR_ACCENT),
-            pen=pg.mkPen(COLOR_PANEL, width=0.8),
+            pen=None,
             hoverable=True,
+            pxMode=True,
         )
         self.units_scatter.setZValue(10)
+        self.units_scatter.sigHovered.connect(self._on_units_hovered)
         self.plot_widget.addItem(self.units_scatter)
 
+        # Backward-compat candidate horizontal line (hidden)
         self.cand_line = pg.InfiniteLine(
             angle=0,
             pen=pg.mkPen(COLOR_CANDIDATE_MARKER, width=1.5, style=Qt.PenStyle.DashLine),
         )
         self.cand_line.setZValue(15)
+        self.cand_line.setVisible(False)
         self.plot_widget.addItem(self.cand_line)
 
+        # Focused unit dark outline box
         self.cand_marker = pg.ScatterPlotItem(
-            size=12,
-            symbol="d",
-            brush=pg.mkBrush(COLOR_CANDIDATE_MARKER),
-            pen=pg.mkPen(COLOR_PANEL, width=1.2),
+            size=15,
+            symbol=_FOCUSED_BOX_PATH,
+            brush=pg.mkBrush(0, 0, 0, 0),
+            pen=pg.mkPen(COLOR_TEXT, width=1.4),
+            pxMode=True,
         )
         self.cand_marker.setZValue(20)
+        self.cand_marker.setVisible(False)
         self.plot_widget.addItem(self.cand_marker)
+
+        # Right: Vertical depth KDE panel
+        self.kde_plot = pg.PlotWidget(self)
+        self.kde_plot.setFixedSize(PLOT_PROBE_KDE_WIDTH, PLOT_PROBE_HEIGHT)
+        self.kde_plot.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+        self.kde_plot.setMouseEnabled(x=False, y=False)
+        apply_plot_style(self.kde_plot, compact=True)
+        self.kde_plot.hideAxis("left")
+        kde_bottom_ax = self.kde_plot.getAxis("bottom")
+        if kde_bottom_ax is not None:
+            kde_bottom_ax.setPen(pg.mkPen(None))
+            kde_bottom_ax.setStyle(
+                tickFont=make_font(FONT_SIZE_TICK),
+                tickTextOffset=3,
+                tickLength=0,
+                showValues=True,
+            )
+            kde_bottom_ax.setTicks([[(0.0, " ")]])
+        self.kde_plot.showAxis("bottom", True)
+        self.kde_plot.getPlotItem().setContentsMargins(0, 4, 2, 4)
+        self.kde_plot.setYLink(self.plot_widget)
+        self.kde_plot.setXRange(0.0, 1.12, padding=0.0)
+        self.kde_plot.getViewBox().disableAutoRange()
+
+        self._kde_baseline = pg.InfiniteLine(
+            pos=0.0,
+            angle=90,
+            pen=pg.mkPen(COLOR_AXIS, width=1.0),
+        )
+        self._kde_baseline.setZValue(1)
+        self.kde_plot.addItem(self._kde_baseline)
+
+        self._kde_bg_fill = QGraphicsPathItem()
+        self._kde_bg_fill.setBrush(pg.mkBrush(*rgba_from_hex(_PROBE_KDE_BG_COLOR, 55)))
+        self._kde_bg_fill.setPen(pg.mkPen(None))
+        self._kde_bg_fill.setZValue(2)
+        self.kde_plot.addItem(self._kde_bg_fill)
+
+        self._kde_bg_curve = pg.PlotCurveItem(pen=pg.mkPen(_PROBE_KDE_BG_COLOR, width=1.0))
+        self._kde_bg_curve.setZValue(3)
+        self.kde_plot.addItem(self._kde_bg_curve)
+
+        self._kde_fg_fill = QGraphicsPathItem()
+        self._kde_fg_fill.setBrush(pg.mkBrush(*rgba_from_hex(COLOR_SUCCESS, 65)))
+        self._kde_fg_fill.setPen(pg.mkPen(None))
+        self._kde_fg_fill.setZValue(4)
+        self._kde_fg_fill.setVisible(False)
+        self.kde_plot.addItem(self._kde_fg_fill)
+
+        self._kde_fg_curve = pg.PlotCurveItem(pen=pg.mkPen(COLOR_SUCCESS, width=1.2))
+        self._kde_fg_curve.setZValue(5)
+        self._kde_fg_curve.setVisible(False)
+        self.kde_plot.addItem(self._kde_fg_curve)
+
+        layout.addWidget(self.kde_plot)
 
         self.export_name_provider: Optional[Callable[[], str]] = None
         install_figure_export_menu(
             self.plot_widget,
-            export_target=self.plot_widget,
+            export_target=self,
             default_name=self._export_name,
+            label="Save probe figure as SVG…",
         )
+        install_figure_export_menu(
+            self.kde_plot,
+            export_target=self,
+            default_name=self._export_name,
+            label="Save probe figure as SVG…",
+        )
+
+        self.clear_probe()
+
+    def _apply_shank_count(self, n_shanks: int) -> None:
+        """Resize probe widget and shank canvas for `n_shanks` shanks."""
+        n = max(1, int(n_shanks))
+        self._n_shanks = n
+        plot_w = PLOT_PROBE_LEFT_MARGIN + PLOT_PROBE_SHANK_WIDTH * n
+        total_w = plot_w + PLOT_PROBE_KDE_WIDTH
+        self.plot_widget.setFixedSize(plot_w, PLOT_PROBE_HEIGHT)
+        self.kde_plot.setFixedSize(PLOT_PROBE_KDE_WIDTH, PLOT_PROBE_HEIGHT)
+        self.setFixedSize(total_w, PLOT_PROBE_HEIGHT)
+        self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+
+    def _clear_shank_rects(self) -> None:
+        for item in self._shank_rect_items:
+            try:
+                self.plot_widget.removeItem(item)
+            except Exception:
+                pass
+        self._shank_rect_items.clear()
+
+    def _on_units_hovered(self, _scatter: Any, points: Any, _ev: Any = None) -> None:
+        if points is not None and len(points) > 0:
+            uid = points[0].data()
+            tip = self._unit_tooltips.get(uid)
+            if tip:
+                self.plot_widget.setToolTip(tip)
+                return
+        self.plot_widget.setToolTip("")
+
+    def _clear_extra_kdes(self) -> None:
+        for fill_item, curve_item in self._extra_kde_items:
+            try:
+                self.kde_plot.removeItem(fill_item)
+            except Exception:
+                pass
+            try:
+                self.kde_plot.removeItem(curve_item)
+            except Exception:
+                pass
+        self._extra_kde_items.clear()
+
+    def clear_probe(self) -> None:
+        """Reset probe to an empty 1-shank default state."""
+        self._clear_shank_rects()
+        self._clear_extra_kdes()
+        self._unit_tooltips.clear()
+        self._apply_shank_count(1)
+        self.sites_scatter.setData(x=[], y=[])
+        self.units_scatter.setData(x=[], y=[])
+        self.cand_marker.setData(x=[], y=[])
+        self.cand_marker.setVisible(False)
+        self.cand_line.setVisible(False)
+        self._kde_bg_fill.setPath(QPainterPath())
+        self._kde_bg_curve.setData([], [])
+        self._kde_fg_fill.setPath(QPainterPath())
+        self._kde_fg_fill.setVisible(False)
+        self._kde_fg_curve.setData([], [])
+        self._kde_fg_curve.setVisible(False)
+
+        shank_rect = QGraphicsRectItem(-0.36, 0.0, 0.72, 1000.0)
+        shank_rect.setBrush(pg.mkBrush(_PROBE_SHANK_FILL))
+        shank_rect.setPen(pg.mkPen(None))
+        shank_rect.setZValue(1)
+        self.plot_widget.addItem(shank_rect)
+        self._shank_rect_items.append(shank_rect)
+
+        self.plot_widget.setXRange(-0.5, 0.5, padding=0.0)
+        self.plot_widget.setYRange(-25.0, 1025.0, padding=0.0)
+        bottom_ax = self.plot_widget.getAxis("bottom")
+        if bottom_ax is not None:
+            bottom_ax.setTicks([[(0.0, "0")]])
+        left_ax = self.plot_widget.getAxis("left")
+        if left_ax is not None:
+            left_ax.setTicks(compute_clean_y_ticks(1000.0, max_ticks=4))
+
+    def set_probe_data(
+        self,
+        channel_positions: Optional[np.ndarray],
+        units: Sequence[Dict[str, Any]],
+        focused_id: Any = None,
+        bg_kde_depths: Optional[Sequence[float]] = None,
+        fg_kde_depths: Optional[Sequence[float]] = None,
+        fg_kde_color: str = COLOR_SUCCESS,
+        fg_kdes: Optional[Sequence[Tuple[Sequence[float], str]]] = None,
+    ) -> None:
+        """Render multi-shank silhouettes, horizontal unit bars, focused box, and vertical depth KDE."""
+        unit_xs = [float(u.get("probe_x", 0.0)) for u in units]
+        unit_ys = [float(u.get("depth", 0.0)) for u in units]
+
+        # Keep hidden sites_scatter populated for backward compatibility
+        if channel_positions is not None:
+            arr = np.asarray(channel_positions, dtype=np.float64)
+            if arr.ndim == 2 and arr.shape[1] >= 2 and arr.shape[0] > 0:
+                self.sites_scatter.setData(x=arr[:, 0], y=arr[:, 1])
+            else:
+                self.sites_scatter.setData(x=[], y=[])
+        elif unit_xs:
+            seen = list({(x, y) for x, y in zip(unit_xs, unit_ys) if np.isfinite(x) and np.isfinite(y)})
+            if seen:
+                self.sites_scatter.setData(x=[p[0] for p in seen], y=[p[1] for p in seen])
+            else:
+                self.sites_scatter.setData(x=[], y=[])
+        else:
+            self.sites_scatter.setData(x=[], y=[])
+
+        shanks = detect_probe_shanks(channel_positions, unit_x=unit_xs, unit_y=unit_ys)
+        n_shanks = max(1, len(shanks))
+        self._apply_shank_count(n_shanks)
+
+        # Compute overall depth range across shanks and units
+        y_mins = [s["y_min"] for s in shanks]
+        y_maxs = [s["y_max"] for s in shanks]
+        finite_uy = [y for y in unit_ys if np.isfinite(y)]
+        if finite_uy:
+            y_mins.append(min(finite_uy))
+            y_maxs.append(max(finite_uy))
+        global_y_min = float(min(y_mins)) if y_mins else 0.0
+        global_y_max = float(max(y_maxs)) if y_maxs else 1000.0
+        if global_y_max <= global_y_min:
+            global_y_min -= 50.0
+            global_y_max += 50.0
+        y_span = global_y_max - global_y_min
+        y_pad = max(y_span * 0.03, 15.0)
+
+        # Draw crisp grey shank rectangles
+        self._clear_shank_rects()
+        shank_brush = pg.mkBrush(_PROBE_SHANK_FILL)
+        no_pen = pg.mkPen(None)
+        for s in shanks:
+            idx = int(s["shank_index"])
+            rect_item = QGraphicsRectItem(
+                float(idx) - 0.36,
+                float(s["y_min"]),
+                0.72,
+                max(1.0, float(s["y_max"] - s["y_min"])),
+            )
+            rect_item.setBrush(shank_brush)
+            rect_item.setPen(no_pen)
+            rect_item.setZValue(1)
+            self.plot_widget.addItem(rect_item)
+            self._shank_rect_items.append(rect_item)
+
+        self.plot_widget.setXRange(-0.5, float(n_shanks) - 0.5, padding=0.0)
+        self.plot_widget.setYRange(global_y_min - y_pad, global_y_max + y_pad, padding=0.0)
+
+        bottom_ax = self.plot_widget.getAxis("bottom")
+        if bottom_ax is not None:
+            bottom_ax.setTicks([[(float(i), str(i)) for i in range(n_shanks)]])
+
+        left_ax = self.plot_widget.getAxis("left")
+        if left_ax is not None:
+            left_ax.setTicks(self._compute_depth_ticks(global_y_min, global_y_max))
+
+        # Map each unit to nearest shank and left/right sub-column
+        self._unit_tooltips.clear()
+        bg_spots: List[Dict[str, Any]] = []
+        fg_spots: List[Dict[str, Any]] = []
+        focused_pos: Optional[Tuple[float, float]] = None
+
+        for u_idx, u in enumerate(units):
+            uid = u.get("id")
+            px = float(u.get("probe_x", 0.0))
+            py = float(u.get("depth", 0.0))
+            if not np.isfinite(py):
+                continue
+            if not np.isfinite(px):
+                px = 0.0
+
+            nearest = min(shanks, key=lambda s: abs(s["x_median"] - px))
+            s_idx = int(nearest["shank_index"])
+            if abs(nearest["x_max"] - nearest["x_min"]) < 1e-6:
+                sub_offset = -0.17 if (u_idx % 2 == 0) else 0.17
+            else:
+                sub_offset = -0.17 if (px <= nearest["x_median"]) else 0.17
+            plot_x = float(s_idx) + sub_offset
+
+            color_hex = str(u.get("color", COLOR_ACCENT))
+            alpha = int(u.get("alpha", 255))
+            priority = int(u.get("priority", 0))
+            tip = u.get("tooltip")
+            if tip:
+                self._unit_tooltips[uid] = str(tip)
+
+            spot = {
+                "pos": (plot_x, py),
+                "data": uid,
+                "brush": pg.mkBrush(*_blend_opaque_rgba(color_hex, _PROBE_SHANK_FILL, alpha)),
+                "pen": None,
+                "size": 11,
+                "symbol": _UNIT_BAR_PATH,
+            }
+            if priority > 0:
+                fg_spots.append(spot)
+            else:
+                bg_spots.append(spot)
+
+            if focused_id is not None and uid == focused_id:
+                focused_pos = (plot_x, py)
+
+        self.units_scatter.setData(spots=bg_spots + fg_spots)
+
+        if focused_pos is not None:
+            self.cand_marker.setData(x=[focused_pos[0]], y=[focused_pos[1]])
+            self.cand_marker.setVisible(True)
+            self.cand_line.setValue(focused_pos[1])
+            self.cand_line.setVisible(False)
+        else:
+            self.cand_marker.setData(x=[], y=[])
+            self.cand_marker.setVisible(False)
+            self.cand_line.setVisible(False)
+
+        # Render vertical depth KDEs
+        y_grid = np.linspace(global_y_min - y_pad, global_y_max + y_pad, 120)
+        bg_arr = np.asarray(bg_kde_depths if bg_kde_depths is not None else [], dtype=np.float64)
+        bg_arr = bg_arr[np.isfinite(bg_arr)]
+        if len(bg_arr) > 0:
+            bg_dens = _compute_vertical_depth_kde(bg_arr, y_grid, y_span)
+            self._kde_bg_fill.setPath(_build_horizontal_kde_path(bg_dens, y_grid))
+            self._kde_bg_fill.setVisible(True)
+            self._kde_bg_curve.setData(x=bg_dens, y=y_grid)
+            self._kde_bg_curve.setVisible(True)
+        else:
+            self._kde_bg_fill.setPath(QPainterPath())
+            self._kde_bg_fill.setVisible(False)
+            self._kde_bg_curve.setData([], [])
+            self._kde_bg_curve.setVisible(False)
+
+        self._clear_extra_kdes()
+
+        resolved_fg_kdes: List[Tuple[np.ndarray, str]] = []
+        if fg_kdes is not None:
+            for d_seq, c_hex in fg_kdes:
+                d_arr = np.asarray(d_seq if d_seq is not None else [], dtype=np.float64).ravel()
+                d_arr = d_arr[np.isfinite(d_arr)]
+                if len(d_arr) > 0:
+                    resolved_fg_kdes.append((d_arr, str(c_hex)))
+        else:
+            fg_arr = np.asarray(fg_kde_depths if fg_kde_depths is not None else [], dtype=np.float64).ravel()
+            fg_arr = fg_arr[np.isfinite(fg_arr)]
+            if len(fg_arr) > 0:
+                resolved_fg_kdes.append((fg_arr, str(fg_kde_color)))
+
+        if resolved_fg_kdes:
+            fill_alpha = 40 if len(resolved_fg_kdes) > 1 else 65
+            first_depths, first_color = resolved_fg_kdes[0]
+            first_dens = _compute_vertical_depth_kde(first_depths, y_grid, y_span)
+            self._kde_fg_fill.setBrush(pg.mkBrush(*rgba_from_hex(first_color, fill_alpha)))
+            self._kde_fg_fill.setPath(_build_horizontal_kde_path(first_dens, y_grid))
+            self._kde_fg_fill.setVisible(True)
+            self._kde_fg_curve.setPen(pg.mkPen(first_color, width=1.2))
+            self._kde_fg_curve.setData(x=first_dens, y=y_grid)
+            self._kde_fg_curve.setVisible(True)
+
+            for k_idx, (k_depths, k_color) in enumerate(resolved_fg_kdes[1:], start=1):
+                k_dens = _compute_vertical_depth_kde(k_depths, y_grid, y_span)
+                fill_item = QGraphicsPathItem()
+                fill_item.setBrush(pg.mkBrush(*rgba_from_hex(k_color, fill_alpha)))
+                fill_item.setPen(pg.mkPen(None))
+                fill_item.setPath(_build_horizontal_kde_path(k_dens, y_grid))
+                fill_item.setZValue(4.0 + k_idx * 0.02)
+                self.kde_plot.addItem(fill_item)
+
+                curve_item = pg.PlotCurveItem(pen=pg.mkPen(k_color, width=1.2))
+                curve_item.setData(x=k_dens, y=y_grid)
+                curve_item.setZValue(5.0 + k_idx * 0.02)
+                self.kde_plot.addItem(curve_item)
+                self._extra_kde_items.append((fill_item, curve_item))
+        else:
+            self._kde_fg_fill.setPath(QPainterPath())
+            self._kde_fg_fill.setVisible(False)
+            self._kde_fg_curve.setData([], [])
+            self._kde_fg_curve.setVisible(False)
+
+        self.kde_plot.setXRange(0.0, 1.12, padding=0.0)
+
+    @staticmethod
+    def _compute_depth_ticks(y_min: float, y_max: float) -> List[List[Tuple[float, str]]]:
+        """Compute clean rounded depth ticks spanning `[y_min, y_max]`."""
+        span = max(1.0, float(y_max - y_min))
+        raw_step = span / 4.0
+        mag = 10.0 ** float(np.floor(np.log10(raw_step)))
+        norm = raw_step / mag
+        if norm <= 1.0:
+            step = 1.0 * mag
+        elif norm <= 2.0:
+            step = 2.0 * mag
+        elif norm <= 5.0:
+            step = 5.0 * mag
+        else:
+            step = 10.0 * mag
+
+        start = float(np.ceil((y_min - 1e-9) / step) * step)
+        ticks: List[Tuple[float, str]] = []
+        val = start
+        while val <= y_max + 1e-9 and len(ticks) < 8:
+            clean = 0.0 if abs(val) < 1e-9 else float(val)
+            label = str(int(round(clean))) if abs(clean - round(clean)) < 1e-6 else f"{clean:g}"
+            ticks.append((clean, label))
+            val += step
+        if not ticks:
+            ticks = [(float(y_min), f"{y_min:.0f}"), (float(y_max), f"{y_max:.0f}")]
+        return [ticks]
 
     def _export_name(self) -> str:
         """Return filename stem for SVG export."""

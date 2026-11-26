@@ -151,7 +151,7 @@ def test_wp1_fixed_plot_sizes():
     assert PLOT_CLUSTER_PROB_SIZE == (232, 90)
     assert PLOT_METRIC_KDE_SIZE == (128, 44)
     assert PLOT_EMBEDDING_SIZE == (268, 268)
-    assert PLOT_PROBE_SIZE == (76, 268)
+    assert PLOT_PROBE_SIZE == (122, 268)
     assert CLUSTER_CARD_SIZE == (217, 148)
 
     # Detection view plot sizes
