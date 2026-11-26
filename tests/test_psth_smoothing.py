@@ -64,7 +64,7 @@ def test_compute_psth_and_raster_smoothing_defaults():
     )
 
     assert res["is_smooth"] is True
-    assert res["gaussian_sigma_ms"] == 2.0
+    assert res["gaussian_sigma_ms"] == 1.0
     assert "psth_rates_raw" in res
     assert len(res["psth_rates"]) == len(res["psth_bins"]) - 1
     assert len(res["psth_rates_raw"]) == len(res["psth_bins"]) - 1
@@ -157,8 +157,8 @@ def test_detection_view_psth_smoothing_interaction(qapp, tmp_path):
     # Initial state defaults
     assert view.psth_smooth is True
     assert view.chk_smooth.isChecked() is True
-    assert view.psth_gaussian_sigma_ms == 2.0
-    assert view.spin_sigma.value() == 2.0
+    assert view.psth_gaussian_sigma_ms == 1.0
+    assert view.spin_sigma.value() == 1.0
     assert view.spin_sigma.isEnabled() is True
 
     # Select Unit 0 to trigger rendering
@@ -203,8 +203,8 @@ def test_clustering_view_psth_smoothing_interaction(qapp):
     # Initial defaults
     assert view.psth_smooth is True
     assert view.chk_smooth.isChecked() is True
-    assert view.psth_gaussian_sigma_ms == 2.0
-    assert view.spin_sigma.value() == 2.0
+    assert view.psth_gaussian_sigma_ms == 1.0
+    assert view.spin_sigma.value() == 1.0
     assert len(view._cluster_cards) > 0
 
     # Toggle smoothing off
@@ -227,3 +227,86 @@ def test_clustering_view_psth_smoothing_interaction(qapp):
         assert view.image_viewer is not None
 
     view.close()
+
+
+def test_psth_bin_size_defaults_detection_control_clamping_and_dialog(qapp, monkeypatch):
+    """Verify 0.5 ms default PSTH bin width across app, DetectionView.set_psth_bin_size clamping/rendering, dialog spinbox, and compute_gaussian_psth at 0.5 & 0.1 ms."""
+    from PyQt6.QtWidgets import QDialog, QDoubleSpinBox
+    from optocurator.analysis.clustering import ClusteringParameters, FeatureConfiguration
+    from optocurator.analysis.metrics import compute_gaussian_psth
+
+    # 1. Program-wide 0.5 ms bin width and 1.0 ms Gaussian sigma defaults
+    assert FeatureConfiguration().bin_size_ms == pytest.approx(0.5)
+    assert FeatureConfiguration().psth_gaussian_sigma_ms == pytest.approx(1.0)
+    assert ClusteringParameters().presented_bin_size_ms == pytest.approx(0.5)
+    assert ClusteringParameters().psth_gaussian_sigma_ms == pytest.approx(1.0)
+
+    cview = ClusteringView()
+    try:
+        assert cview.current_bin_size_ms == pytest.approx(0.5)
+    finally:
+        cview.close()
+
+    # 2. DetectionView default, live PSTH bin spacing updates, clamping, and dialog spinbox
+    dview = DetectionView(load_mock=True)
+    try:
+        assert dview.psth_bin_size_ms == pytest.approx(0.5)
+        dview.table_units.selectRow(0)
+        dview._on_unit_selected()
+        qapp.processEvents()
+
+        def _rendered_psth_dx() -> float:
+            cache = getattr(dview.psth_plot, "_psth_cache", {})
+            curve = cache.get("smooth_curve")
+            assert curve is not None
+            x_data, _y_data = curve.getData()
+            assert x_data is not None and len(x_data) >= 2
+            return float(np.median(np.diff(x_data)))
+
+        assert _rendered_psth_dx() == pytest.approx(0.5, abs=1e-3)
+
+        dview.set_psth_bin_size(0.1)
+        qapp.processEvents()
+        assert dview.psth_bin_size_ms == pytest.approx(0.1)
+        assert _rendered_psth_dx() == pytest.approx(0.1, abs=1e-3)
+
+        dview.set_psth_bin_size(1.0)
+        qapp.processEvents()
+        assert dview.psth_bin_size_ms == pytest.approx(1.0)
+        assert _rendered_psth_dx() == pytest.approx(1.0, abs=1e-3)
+
+        # Clamping to [0.1, 20.0]
+        dview.set_psth_bin_size(0.01)
+        assert dview.psth_bin_size_ms == pytest.approx(0.1)
+        dview.set_psth_bin_size(50.0)
+        assert dview.psth_bin_size_ms == pytest.approx(20.0)
+
+        # prompt_visualization_settings spinbox initializes to current bin size and applies on accept
+        dview.set_psth_bin_size(0.5)
+        seen_bin_spin: list[float] = []
+
+        def _fake_dialog_exec(self_dlg: QDialog) -> int:
+            spins = self_dlg.findChildren(QDoubleSpinBox)
+            bin_spins = [s for s in spins if s.suffix() == " ms" and abs(s.minimum() - 0.1) < 1e-6 and abs(s.maximum() - 20.0) < 1e-6]
+            assert len(bin_spins) == 1
+            seen_bin_spin.append(bin_spins[0].value())
+            bin_spins[0].setValue(1.5)
+            return int(QDialog.DialogCode.Accepted)
+
+        monkeypatch.setattr(QDialog, "exec", _fake_dialog_exec)
+        dview.prompt_visualization_settings()
+        assert seen_bin_spin == [pytest.approx(0.5)]
+        assert dview.psth_bin_size_ms == pytest.approx(1.5)
+    finally:
+        dview.close()
+
+    # 3. compute_gaussian_psth at 0.5 ms and 0.1 ms
+    raster_x = np.full(20, 4.0, dtype=np.float64)
+    for dt_ms in (0.5, 0.1):
+        bins, rates = compute_gaussian_psth(
+            raster_x, n_trials=20, window_ms=(-30.0, 50.0), bin_size_ms=dt_ms, gaussian_sigma_ms=2.0
+        )
+        assert len(bins) == len(rates) + 1 and len(rates) > 10
+        assert float(np.median(np.diff(bins))) == pytest.approx(dt_ms, abs=1e-3)
+        assert np.all(np.isfinite(rates))
+        assert float(np.max(rates)) > 0.0

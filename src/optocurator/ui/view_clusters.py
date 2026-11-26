@@ -2189,9 +2189,9 @@ class ClusteringView(QWidget):
         self.al_max_distance_sigma: float = 3.5
         self._is_dirty: bool = False
         self.current_window_ms: Tuple[float, float] = (-30.0, 50.0)
-        self.current_bin_size_ms: float = 2.0
+        self.current_bin_size_ms: float = 0.5
         self.psth_smooth: bool = True
-        self.psth_gaussian_sigma_ms: float = 2.0
+        self.psth_gaussian_sigma_ms: float = 1.0
         self.cluster_psth_norm: str = "probability"
         self.raster_order_by: str = "presentation"
         self.raster_marker_size: float = 3.0
@@ -2984,10 +2984,10 @@ class ClusteringView(QWidget):
         self.edit_win_end.setVisible(False)
 
         self.spin_bin_size = QDoubleSpinBox(self.clusters_area_panel)
-        self.spin_bin_size.setRange(0.2, 50.0)
-        self.spin_bin_size.setSingleStep(0.5)
+        self.spin_bin_size.setRange(0.1, 50.0)
+        self.spin_bin_size.setSingleStep(0.1)
         self.spin_bin_size.setDecimals(1)
-        self.spin_bin_size.setValue(2.0)
+        self.spin_bin_size.setValue(0.5)
         self.spin_bin_size.valueChanged.connect(self._on_bin_size_changed)
         self.spin_bin_size.setVisible(False)
 
@@ -3006,7 +3006,7 @@ class ClusteringView(QWidget):
         self.spin_sigma.setRange(0.2, 20.0)
         self.spin_sigma.setSingleStep(0.5)
         self.spin_sigma.setDecimals(1)
-        self.spin_sigma.setValue(2.0)
+        self.spin_sigma.setValue(1.0)
         self.spin_sigma.valueChanged.connect(self.set_psth_gaussian_sigma)
         self.spin_sigma.setVisible(False)
 
@@ -7967,7 +7967,7 @@ class ClusteringView(QWidget):
         self.auto_assign_enabled = params_dict["auto_assign_enabled"]
         self.active_learning_enabled = params_dict["active_learning_enabled"]
         self.psth_smooth = params_dict.get("psth_smooth", True)
-        self.psth_gaussian_sigma_ms = params_dict.get("psth_gaussian_sigma_ms", 2.0)
+        self.psth_gaussian_sigma_ms = params_dict.get("psth_gaussian_sigma_ms", 1.0)
         self.cluster_psth_norm = params_dict.get("cluster_psth_norm", "probability")
         self.al_n_estimators = int(params_dict.get("al_n_estimators", 100))
         self.al_random_state = int(params_dict.get("al_random_state", 42))

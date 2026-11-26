@@ -337,7 +337,8 @@ class DetectionView(QWidget):
         self.raster_order_by: str = "presentation"  # "presentation" or "latency"
         self.raster_marker_size: float = 3.0
         self.psth_smooth: bool = True
-        self.psth_gaussian_sigma_ms: float = 2.0
+        self.psth_gaussian_sigma_ms: float = 1.0
+        self.psth_bin_size_ms: float = 0.5
 
         # Curation & undo state
         self._is_dirty: bool = False
@@ -382,7 +383,7 @@ class DetectionView(QWidget):
         self.spin_sigma = QDoubleSpinBox(self)
         self.spin_sigma.setRange(0.2, 20.0)
         self.spin_sigma.setSingleStep(0.5)
-        self.spin_sigma.setValue(2.0)
+        self.spin_sigma.setValue(1.0)
         self.spin_sigma.setSuffix(" ms")
         self.spin_sigma.setStyleSheet(TOOLBAR_SPIN_STYLE)
         self.spin_sigma.hide()
@@ -2394,6 +2395,13 @@ class DetectionView(QWidget):
         else:
             self._sync_window_text_boxes()
 
+    def set_psth_bin_size(self, bin_size_ms: float) -> None:
+        """Update PSTH bin width in ms (clamped to [0.1, 20.0]) and re-render focused unit."""
+        clamped = max(0.1, min(20.0, float(bin_size_ms)))
+        self.psth_bin_size_ms = clamped
+        if self.table_units.selectionModel() and self.table_units.selectionModel().selectedRows():
+            self._on_unit_selected()
+
     def prompt_visualization_settings(self) -> None:
         """Open a compact visualization settings dialog for Detection plots."""
         dialog = QDialog(self)
@@ -2415,6 +2423,14 @@ class DetectionView(QWidget):
         chk_smooth.toggled.connect(spin_sigma.setEnabled)
         form.addRow("Gaussian sigma:", spin_sigma)
 
+        spin_bin = QDoubleSpinBox(dialog)
+        spin_bin.setRange(0.1, 20.0)
+        spin_bin.setDecimals(1)
+        spin_bin.setSingleStep(0.1)
+        spin_bin.setValue(self.psth_bin_size_ms)
+        spin_bin.setSuffix(" ms")
+        form.addRow("PSTH bin width:", spin_bin)
+
         spin_marker = QDoubleSpinBox(dialog)
         spin_marker.setRange(0.5, 30.0)
         spin_marker.setSingleStep(0.5)
@@ -2433,6 +2449,7 @@ class DetectionView(QWidget):
         if dialog.exec() == QDialog.DialogCode.Accepted:
             self.set_psth_smooth(chk_smooth.isChecked())
             self.set_psth_gaussian_sigma(spin_sigma.value())
+            self.set_psth_bin_size(spin_bin.value())
             self.set_raster_marker_size(spin_marker.value())
 
     def _on_unit_selected(self) -> None:
@@ -2474,6 +2491,7 @@ class DetectionView(QWidget):
                 unit.spike_times,
                 pulse_onsets,
                 window_ms=self.current_window_ms,
+                bin_size_ms=self.psth_bin_size_ms,
                 order_by=self.raster_order_by,
                 smooth=self.psth_smooth,
                 gaussian_sigma_ms=self.psth_gaussian_sigma_ms,

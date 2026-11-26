@@ -121,7 +121,7 @@ def resolve_experiment_path(project_dir: Path, path_str: str) -> Path:
 
 
 _SCALAR_MODEL_PARAM_SPECS: Tuple[Tuple[str, Any, Any, Tuple[str, ...]], ...] = (
-    ("bin_size_ms", 2.0, float, ("view_params",)),
+    ("bin_size_ms", 0.5, float, ("view_params",)),
     ("raster_order_by", "presentation", str, ("view_params",)),
     ("raster_marker_size", 3.0, float, ("view_params",)),
     ("auto_assign_threshold", 0.85, float, ("active_learning_params",)),
@@ -221,7 +221,7 @@ def serialize_model_parameters(
     out["psth_gaussian_sigma_ms"] = (
         float(psth_gaussian_sigma_ms)
         if psth_gaussian_sigma_ms is not None
-        else float(getattr(fc, "psth_gaussian_sigma_ms", 2.0))
+        else float(getattr(fc, "psth_gaussian_sigma_ms", 1.0))
     )
     out["cluster_psth_norm"] = (
         str(cluster_psth_norm)
@@ -253,7 +253,7 @@ def deserialize_model_parameters(data: Dict[str, Any]) -> Dict[str, Any]:
 
     psth_smooth = bool(data.get("psth_smooth", getattr(feature_config, "psth_smooth", True)))
     psth_gaussian_sigma_ms = float(
-        data.get("psth_gaussian_sigma_ms", getattr(feature_config, "psth_gaussian_sigma_ms", 2.0))
+        data.get("psth_gaussian_sigma_ms", getattr(feature_config, "psth_gaussian_sigma_ms", 1.0))
     )
     cluster_psth_norm = str(data.get("cluster_psth_norm", getattr(clustering_params, "cluster_psth_norm", "probability")))
     clustering_params.cluster_psth_norm = cluster_psth_norm

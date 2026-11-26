@@ -285,10 +285,11 @@ class FeatureSettingsDialog(QDialog):
         form_psth.addRow("PSTH Window Stop:", self.spin_end)
 
         self.spin_bin = QDoubleSpinBox()
-        self.spin_bin.setRange(0.5, 20.0)
+        self.spin_bin.setRange(0.1, 20.0)
+        self.spin_bin.setDecimals(1)
         self.spin_bin.setValue(self.config.bin_size_ms)
         self.spin_bin.setSuffix(" ms")
-        self.spin_bin.setSingleStep(0.5)
+        self.spin_bin.setSingleStep(0.1)
         form_psth.addRow("PSTH Bin Width:", self.spin_bin)
 
         self.chk_psth_smooth = QCheckBox("Smooth Firing Rate (Elephant Gaussian Kernel)")
@@ -298,7 +299,7 @@ class FeatureSettingsDialog(QDialog):
 
         self.spin_psth_sigma = QDoubleSpinBox()
         self.spin_psth_sigma.setRange(0.2, 20.0)
-        self.spin_psth_sigma.setValue(getattr(self.config, "psth_gaussian_sigma_ms", 2.0))
+        self.spin_psth_sigma.setValue(getattr(self.config, "psth_gaussian_sigma_ms", 1.0))
         self.spin_psth_sigma.setSuffix(" ms")
         self.spin_psth_sigma.setSingleStep(0.5)
         self.spin_psth_sigma.setToolTip("Gaussian kernel standard deviation σ in milliseconds")
@@ -415,7 +416,7 @@ class FeatureSettingsDialog(QDialog):
         self.spin_end.setValue(w1)
         self.spin_bin.setValue(c.bin_size_ms)
         self.chk_psth_smooth.setChecked(getattr(c, "psth_smooth", True))
-        self.spin_psth_sigma.setValue(getattr(c, "psth_gaussian_sigma_ms", 2.0))
+        self.spin_psth_sigma.setValue(getattr(c, "psth_gaussian_sigma_ms", 1.0))
         self.chk_psth_use_pca.setChecked(getattr(c, "psth_use_pca", True))
         self.spin_psth_pca_var.setValue(getattr(c, "psth_pca_variance_explained", 0.80))
         self._on_psth_toggled(c.use_psth_profile)

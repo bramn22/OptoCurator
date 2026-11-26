@@ -19,11 +19,11 @@ def render_compound_psth_raster(
     stimulus: StimulusProtocol,
     output_path: Union[str, Path],
     window_ms: Tuple[float, float] = (-50.0, 50.0),
-    bin_size_ms: float = 2.0,
+    bin_size_ms: float = 0.5,
     dpi: int = 150,
     order_by: str = "presentation",
     smooth: bool = True,
-    gaussian_sigma_ms: float = 2.0,
+    gaussian_sigma_ms: float = 1.0,
 ) -> Path:
     """Render a high-resolution two-panel compound raster and PSTH plot for a single unit.
 
@@ -147,7 +147,7 @@ def batch_precompute_plots(
     progress_callback: Optional[Callable[[int, int], None]] = None,
     dpi: int = 150,
     smooth: bool = True,
-    gaussian_sigma_ms: float = 2.0,
+    gaussian_sigma_ms: float = 1.0,
 ) -> List[Path]:
     """Headless batch generator rendering raster+PSTH compound plots into output_dir.
 

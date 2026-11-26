@@ -304,10 +304,10 @@ class VisualizationSettingsDialog(QDialog):
     def __init__(
         self,
         window_ms: Tuple[float, float] = (-30.0, 50.0),
-        bin_size_ms: float = 2.0,
+        bin_size_ms: float = 0.5,
         pulse_order: str = "presentation",
         psth_smooth: bool = True,
-        psth_sigma_ms: float = 2.0,
+        psth_sigma_ms: float = 1.0,
         norm_mode: str = "peak",
         marker_size: float = 3.0,
         parent: Optional[QWidget] = None,
@@ -369,8 +369,9 @@ class VisualizationSettingsDialog(QDialog):
         form.addRow("Window Offset:", self.spin_window_end)
 
         self.spin_bin_width = QDoubleSpinBox(self)
-        self.spin_bin_width.setRange(0.5, 20.0)
-        self.spin_bin_width.setSingleStep(0.5)
+        self.spin_bin_width.setRange(0.1, 20.0)
+        self.spin_bin_width.setSingleStep(0.1)
+        self.spin_bin_width.setDecimals(1)
         self.spin_bin_width.setSuffix(" ms")
         self.spin_bin_width.setValue(float(bin_size_ms))
         form.addRow("Bin Width:", self.spin_bin_width)

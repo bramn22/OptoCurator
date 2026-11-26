@@ -656,12 +656,12 @@ def build_psth_plot(
     plot: Union[pg.PlotWidget, pg.PlotItem],
     bin_centers_ms: np.ndarray,
     firing_rate_hz: np.ndarray,
-    bin_size_ms: float = 1.0,
+    bin_size_ms: float = 0.5,
     window_ms: Tuple[float, float] = (-30.0, 50.0),
     baseline_rate_hz: Optional[float] = None,
     compact: bool = False,
     smooth: bool = True,
-    gaussian_sigma_ms: float = 2.0,
+    gaussian_sigma_ms: float = 1.0,
     color_hex: Optional[str] = None,
     pulse_duration_ms: float = DEFAULT_PULSE_DURATION_MS,
 ) -> None:
@@ -892,7 +892,7 @@ class UnitResponsePlot(QWidget):
                 if dt_ms > 0:
                     vals = vals * (dt_ms / 1000.0)
         elif len(rx) > 0 and inferred_trials > 0:
-            bin_w = 2.0
+            bin_w = 0.5
             bins = np.arange(float(window_ms[0]), float(window_ms[1]) + bin_w * 0.5, bin_w)
             counts, _ = np.histogram(rx, bins=bins)
             if as_probability:

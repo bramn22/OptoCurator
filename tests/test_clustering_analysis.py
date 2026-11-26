@@ -94,7 +94,7 @@ def test_extract_feature_matrix():
     assert feat_m.shape == (10, 5)
     assert not np.isnan(feat_m).any()
     assert psth_m.shape[0] == 10
-    assert len(t_bins) == 12  # [0, 25] with 2ms step -> 12 bin centers
+    assert len(t_bins) == 50  # [0, 25] with default 0.5 ms step -> 50 bin centers
 
     # 2. PSTH Traces only (without PCA)
     cfg_psth = FeatureConfiguration(
@@ -108,7 +108,7 @@ def test_extract_feature_matrix():
         psth_use_pca=False,
     )
     feat_p, _, _ = extract_feature_matrix(df, cfg_psth)
-    assert feat_p.shape == (10, 12)
+    assert feat_p.shape == (10, 50)
     assert not np.isnan(feat_p).any()
 
     # 3. PSTH Traces with PCA compression (variance explained)
@@ -125,7 +125,7 @@ def test_extract_feature_matrix():
     )
     feat_pca, _, _ = extract_feature_matrix(df, cfg_pca)
     assert feat_pca.shape[0] == 10
-    assert 1 <= feat_pca.shape[1] < 12
+    assert 1 <= feat_pca.shape[1] < 50
     assert not np.isnan(feat_pca).any()
 
 
@@ -314,6 +314,7 @@ def test_clustering_view_four_column_card_grid(qapp):
     """Verify cluster cards in ClusteringView are arranged in a 4-column grid."""
     view = ClusteringView(load_mock=True)
     view.resize(1920, 1080)
+    view.show()
     qapp.processEvents()
     params = ClusteringParameters(n_clusters=4)
     ok = view.run_clustering(params)
@@ -434,9 +435,11 @@ def test_iteration5_acceptance_hotkey_assignment_and_advance(qapp, qtbot):
     if view.active_candidate is not None:
         assert view.active_candidate.global_unit_id != initial_cand_gid
 
-    # Test QShortcut registration (Space, S, N + cluster hotkeys; '+' removed in WP7, Ctrl+S owned by MainWindow in WP8)
+    # Test QShortcut registration (Space, S, N + 1 shortcut per active cluster card)
     assert hasattr(view, "_shortcuts")
-    assert len(view._shortcuts) + len(getattr(view, "_cluster_shortcuts", {})) >= 7
+    assert len(view._shortcuts) == 3
+    assert len(getattr(view, "_cluster_shortcuts", {})) == len(view._cluster_cards)
+    assert len(view._shortcuts) + len(getattr(view, "_cluster_shortcuts", {})) >= 6
 
     # Test ClusterCardWidget dragMoveEvent and child mouse transparency
     card = ClusterCardWidget(cluster_id=target_cluster, count=5, color_hex="#2563EB")
@@ -1431,10 +1434,10 @@ def test_feature_settings_change_does_not_alter_presented_psth_window(qapp):
     assert view.edit_win_start.text() == "-30"
     assert view.edit_win_end.text() == "+50"
 
-    # Verify initial cluster cards have time bins matching (-30.0, 50.0)
+    # Verify initial cluster cards have time bins matching (-30.0, 50.0) at default 0.5 ms bin width
     c0_summary = view.current_clustering_result.cluster_summaries[0]
-    assert c0_summary.time_bins_ms[0] == -29.0
-    assert c0_summary.time_bins_ms[-1] == 49.0
+    assert c0_summary.time_bins_ms[0] == pytest.approx(-29.75)
+    assert c0_summary.time_bins_ms[-1] == pytest.approx(49.75)
 
     # Change feature configuration time window (e.g. to [-10, +25])
     new_cfg = FeatureConfiguration(
@@ -1454,8 +1457,8 @@ def test_feature_settings_change_does_not_alter_presented_psth_window(qapp):
     assert view.edit_win_start.text() == "-30"
     assert view.edit_win_end.text() == "+50"
     c0_updated = view.current_clustering_result.cluster_summaries[0]
-    assert c0_updated.time_bins_ms[0] == -29.0
-    assert c0_updated.time_bins_ms[-1] == 49.0
+    assert c0_updated.time_bins_ms[0] == pytest.approx(-29.75)
+    assert c0_updated.time_bins_ms[-1] == pytest.approx(49.75)
 
     view.close()
 
@@ -1476,10 +1479,10 @@ def test_set_visualized_window_updates_cluster_card_psths_and_text_boxes(qapp):
     assert len(emitted_windows) == 1
     assert emitted_windows[0] == (-50.0, 100.0)
 
-    # Cluster cards must reflect the new time bins
+    # Cluster cards must reflect the new time bins (default 0.5 ms bin width)
     c0 = view.current_clustering_result.cluster_summaries[0]
-    assert c0.time_bins_ms[0] == -49.0
-    assert c0.time_bins_ms[-1] == 99.0
+    assert c0.time_bins_ms[0] == pytest.approx(-49.75)
+    assert c0.time_bins_ms[-1] == pytest.approx(99.75)
 
     # Test editing text boxes directly
     view.edit_win_start.setText("-20")
@@ -1488,8 +1491,8 @@ def test_set_visualized_window_updates_cluster_card_psths_and_text_boxes(qapp):
 
     assert view.current_window_ms == (-20.0, 40.0)
     c0_edited = view.current_clustering_result.cluster_summaries[0]
-    assert c0_edited.time_bins_ms[0] == -19.0
-    assert c0_edited.time_bins_ms[-1] == 39.0
+    assert c0_edited.time_bins_ms[0] == pytest.approx(-19.75)
+    assert c0_edited.time_bins_ms[-1] == pytest.approx(39.75)
 
     # Test invalid text reverts to current_window_ms
     view.edit_win_start.setText("invalid")
@@ -1507,15 +1510,15 @@ def test_set_visualized_window_updates_cluster_card_psths_and_text_boxes(qapp):
 
 
 def test_set_cluster_bin_size_updates_cluster_card_psths(qapp):
-    """Verify default bin size is 2.0 ms, updating to 5.0 ms updates time_bins_ms resolution and cluster cards."""
+    """Verify default bin size is 0.5 ms, updating to 5.0 ms updates time_bins_ms resolution and cluster cards."""
     view = ClusteringView(start_with_clusters=True, load_mock=True)
-    assert view.current_bin_size_ms == 2.0
-    assert view.spin_bin_size.value() == 2.0
+    assert view.current_bin_size_ms == pytest.approx(0.5)
+    assert view.spin_bin_size.value() == pytest.approx(0.5)
 
-    # With default window (-30, 50) and bin size 2.0 ms: 80 ms / 2 ms = 40 bins
+    # With default window (-30, 50) and bin size 0.5 ms: 80 ms / 0.5 ms = 160 bins
     c0 = view.current_clustering_result.cluster_summaries[0]
-    assert len(c0.time_bins_ms) == 40
-    assert np.isclose(c0.time_bins_ms[1] - c0.time_bins_ms[0], 2.0)
+    assert len(c0.time_bins_ms) == 160
+    assert np.isclose(c0.time_bins_ms[1] - c0.time_bins_ms[0], 0.5)
 
     # Change bin size to 5.0 ms
     view.set_cluster_bin_size(5.0)
@@ -2225,7 +2228,7 @@ def test_feature_configuration_weights_and_normalization():
     assert cfg_default.use_psth_profile is True
     assert cfg_default.psth_normalization == "area_normalized"
     assert cfg_default.time_window_ms == (0.0, 25.0)
-    assert cfg_default.bin_size_ms == 2.0
+    assert cfg_default.bin_size_ms == pytest.approx(0.5)
     assert cfg_default.psth_use_pca is True
     assert cfg_default.psth_pca_variance_explained == pytest.approx(0.80)
 
@@ -2234,10 +2237,10 @@ def test_feature_configuration_weights_and_normalization():
     assert feat_default.shape[0] == 12
     assert 5 < feat_default.shape[1] < 5 + psth_default.shape[1]
 
-    # Without PSTH PCA: 5 scalar metrics + 12 PSTH bins = 17 features
+    # Without PSTH PCA: 5 scalar metrics + 50 PSTH bins (0.5 ms default) = 55 features
     cfg_no_pca = FeatureConfiguration(psth_use_pca=False)
     feat_no_pca, _, _ = extract_feature_matrix(df, feature_config=cfg_no_pca)
-    assert feat_no_pca.shape == (12, 17)
+    assert feat_no_pca.shape == (12, 55)
 
     # 2. Enable all 8 scalar features (without PSTH profile)
     cfg_all_scalars = FeatureConfiguration(
@@ -2313,7 +2316,7 @@ def test_feature_configuration_weights_and_normalization():
             psth_use_pca=False,
         )
         feat_norm, _, _ = extract_feature_matrix(df, feature_config=cfg_norm)
-        assert feat_norm.shape == (12, 12)
+        assert feat_norm.shape == (12, 50)
         assert not np.isnan(feat_norm).any()
 
 
@@ -3206,7 +3209,7 @@ def test_area_normalized_psth_l1_and_pca_compression():
     )
     feat_full, _, _ = extract_feature_matrix(df_many, feature_config=cfg_full_many)
     feat_pca, _, _ = extract_feature_matrix(df_many, feature_config=cfg_pca_80)
-    assert feat_full.shape == (16, 12)
+    assert feat_full.shape == (16, 50)
     assert 1 <= feat_pca.shape[1] < feat_full.shape[1]
 
 

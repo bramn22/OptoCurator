@@ -102,8 +102,8 @@ def compute_gaussian_psth(
     raster_x: np.ndarray,
     n_trials: int,
     window_ms: Tuple[float, float],
-    bin_size_ms: float = 2.0,
-    gaussian_sigma_ms: float = 2.0,
+    bin_size_ms: float = 0.5,
+    gaussian_sigma_ms: float = 1.0,
 ) -> Tuple[np.ndarray, np.ndarray]:
     """Compute smooth firing rate PSTH based on a Gaussian kernel using Elephant.
 
@@ -184,11 +184,11 @@ def compute_psth_and_raster(
     spike_times: np.ndarray,
     pulse_onsets: np.ndarray,
     window_ms: Tuple[float, float] = (-50.0, 50.0),
-    bin_size_ms: float = 2.0,
+    bin_size_ms: float = 0.5,
     baseline_window_ms: Optional[Tuple[float, float]] = None,
     order_by: str = "presentation",
     smooth: bool = True,
-    gaussian_sigma_ms: float = 2.0,
+    gaussian_sigma_ms: float = 1.0,
 ) -> Dict[str, Any]:
     """Compute trial-aligned spike raster and firing-rate PSTH histogram.
 

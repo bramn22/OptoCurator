@@ -85,9 +85,9 @@ class FeatureConfiguration:
     weight_psth_profile: float = 1.0
     psth_normalization: str = "area_normalized"  # "area_normalized", "peak_normalized", "raw"
     time_window_ms: Tuple[float, float] = (0.0, 25.0)
-    bin_size_ms: float = 2.0
+    bin_size_ms: float = 0.5
     psth_smooth: bool = True
-    psth_gaussian_sigma_ms: float = 2.0
+    psth_gaussian_sigma_ms: float = 1.0
     psth_use_pca: bool = True
     psth_pca_variance_explained: float = 0.80
 
@@ -131,9 +131,9 @@ class ClusteringParameters:
     distance_threshold: float = 1.5
     feature_config: Optional[FeatureConfiguration] = None
     presented_window_ms: Tuple[float, float] = (-30.0, 50.0)
-    presented_bin_size_ms: float = 2.0
+    presented_bin_size_ms: float = 0.5
     psth_smooth: bool = True
-    psth_gaussian_sigma_ms: float = 2.0
+    psth_gaussian_sigma_ms: float = 1.0
     cluster_psth_norm: str = "probability"     # "probability", "peak", "raw"
     # Multi-algorithm extensions
     algorithm: str = "hierarchical"            # "hierarchical", "kmeans", "gmm"
@@ -190,11 +190,11 @@ class ClusteringResult:
 def generate_psth_matrix(
     df: pd.DataFrame,
     time_window_ms: Tuple[float, float] = (-30.0, 50.0),
-    bin_size_ms: float = 2.0,
+    bin_size_ms: float = 0.5,
     spike_data_map: Optional[Dict[str, Tuple[np.ndarray, np.ndarray]]] = None,
     psth_cache: Optional[Dict[Any, np.ndarray]] = None,
     smooth: bool = True,
-    gaussian_sigma_ms: float = 2.0,
+    gaussian_sigma_ms: float = 1.0,
 ) -> Tuple[np.ndarray, np.ndarray]:
     """Generate PSTH profile matrix [N, T] and time bins [T] for pooled units across specified time window."""
     n_units = len(df)
@@ -1007,14 +1007,14 @@ def seed_clusters_affinity_propagation(
     similarity_percentile: float = 50.0,
     random_state: int = 42,
     presented_window_ms: Tuple[float, float] = (-30.0, 50.0),
-    presented_bin_size_ms: float = 2.0,
+    presented_bin_size_ms: float = 0.5,
     spike_data_map: Optional[Dict[str, Tuple[np.ndarray, np.ndarray]]] = None,
     psth_cache: Optional[Dict[Any, np.ndarray]] = None,
     ap_params: Optional[AffinityPropagationParameters] = None,
     embedding_params: Optional[EmbeddingParameters] = None,
     pulse_duration_ms: Optional[float] = None,
     psth_smooth: bool = True,
-    psth_gaussian_sigma_ms: float = 2.0,
+    psth_gaussian_sigma_ms: float = 1.0,
     cluster_psth_norm: str = "probability",
 ) -> ClusteringResult:
     """Seed initial response clusters using Affinity Propagation with exemplar distance filtering.
@@ -1157,7 +1157,7 @@ def seed_clusters_affinity_propagation(
 
     # 6. Generate grand-average cluster profiles using presented time window
     psth_smooth_flag = params.psth_smooth if params is not None else True
-    psth_sigma_val = params.psth_gaussian_sigma_ms if params is not None else 2.0
+    psth_sigma_val = params.psth_gaussian_sigma_ms if params is not None else 1.0
     psth_matrix, t_bins = generate_psth_matrix(
         df,
         time_window_ms=presented_window_ms,
